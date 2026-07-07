@@ -20,7 +20,12 @@ The interface must be modern and responsive, with striking design.
 
 - HTML + Javascript only.
 
-## Functional Requirements
+### Testing
+
+- Use `unittest` instead of pytest.
+- Validate functionality of every interface elements which the end user will interact with.
+
+## Requirements
 
 ### Minimum Viable Product
 
@@ -29,7 +34,7 @@ The interface must be modern and responsive, with striking design.
 - Render messages in Markdown.
 - Allow tweaking of System Prompt and temperature for chat.
 - Save last used details (e.g. endpoint, model, system prompt, etc) if the user closes the browser.
-
+- Trace logging of all requests shown on the server side console.
 
 ## Reference
 
