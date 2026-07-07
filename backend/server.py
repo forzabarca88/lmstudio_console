@@ -101,19 +101,25 @@ def _handle_proxy_error(method: str, path: str, target: str, error: Exception) -
         )
 
 
+# Model load/unload can take a long time (minutes for large models).
+# Use a 10-minute timeout for these operations.
+_MODEL_OP_TIMEOUT = 600.0
+
+
 async def _proxy_buffered_request(
     method: str,
     path: str,
     target_url: str,
     body: Optional[dict] = None,
     headers: Optional[dict] = None,
+    timeout: Optional[float] = None,
 ) -> JSONResponse:
     """Proxy a buffered request and return a JSONResponse.
 
     Handles all proxy exceptions, logs them, and returns appropriate error responses.
     """
     try:
-        response = await proxy_request(method, f"/{path}", body=body, headers=headers, target_url=target_url)
+        response = await proxy_request(method, f"/{path}", body=body, headers=headers, target_url=target_url, timeout=timeout)
         return _make_json_response(response)
     except (httpx.ConnectError, httpx.TimeoutException, httpx.HTTPStatusError) as e:
         return _handle_proxy_error(method, path, target_url, e)
@@ -167,7 +173,10 @@ async def proxy_post(request: Request, path: str):
     if is_stream:
         return await _proxy_stream_response(path, target_url, body, headers)
 
-    return await _proxy_buffered_request("POST", path, target_url, body=body, headers=headers)
+    # Model load/unload operations can take minutes
+    op_timeout = _MODEL_OP_TIMEOUT if "models/load" in path or "models/unload" in path else None
+
+    return await _proxy_buffered_request("POST", path, target_url, body=body, headers=headers, timeout=op_timeout)
 
 
 async def _proxy_stream_response(

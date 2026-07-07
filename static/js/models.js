@@ -124,6 +124,12 @@ export async function loadModel(dom) {
         });
 
         state.loadedModels.add(data.instance_id);
+        // Update the model object so renderModelList sees the loaded state
+        const model = state.models.find(m => m.key === state.selectedModel);
+        if (model) {
+            if (!model.loaded_instances) model.loaded_instances = [];
+            model.loaded_instances.push({ id: data.instance_id });
+        }
         state.status = "connected";
         renderModelList(dom);
         enableChatControls(dom);
@@ -152,26 +158,37 @@ export async function unloadModel(dom) {
     // Find the instance ID for this model
     const model = state.models.find(m => m.key === state.selectedModel);
     const instanceId = model?.loaded_instances?.[0]?.id || state.selectedModel;
+    const savedInstances = model?.loaded_instances ? [...model.loaded_instances] : null;
 
     state.status = "unloading";
     updateStatus(dom, null, "Unloading model...");
     dom.unloadModelBtn.textContent = "Unloading...";
     dom.unloadModelBtn.disabled = true;
 
+    // Optimistically update UI immediately
+    state.loadedModels.delete(instanceId);
+    if (model) model.loaded_instances = [];
+    state.selectedModel = null;
+    state.chatMessages = [];
+    dom.chatMessages.innerHTML = "";
+    if (dom.streamingIndicator) dom.streamingIndicator.style.display = "none";
+    renderModelList(dom);
+    disableChatControls(dom);
+
     try {
         await apiCall("/api/v1/models/unload", "POST", { instance_id: instanceId });
 
-        state.loadedModels.delete(instanceId);
-        state.selectedModel = null;
-        state.chatMessages = [];
-        dom.chatMessages.innerHTML = "";
         state.status = "connected";
-        renderModelList(dom);
-        disableChatControls(dom);
         updateStatus(dom, true);
         showToast("Model unloaded", "success");
     } catch (e) {
+        // Revert optimistic update on failure
+        state.loadedModels.add(instanceId);
+        if (model) model.loaded_instances = savedInstances;
+        state.selectedModel = model.key;
         state.status = "connected";
+        renderModelList(dom);
+        enableChatControls(dom);
         updateStatus(dom, true);
         showToast(`Unload failed: ${e.message}`, "error");
     }

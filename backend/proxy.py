@@ -22,7 +22,7 @@ def get_client() -> httpx.AsyncClient:
     global _client
     if _client is None:
         _client = httpx.AsyncClient(
-            timeout=httpx.Timeout(30.0, connect=10.0),
+            timeout=httpx.Timeout(60.0, connect=10.0),
         )
     return _client
 
@@ -41,6 +41,7 @@ async def proxy_request(
     body: Optional[dict] = None,
     headers: Optional[dict] = None,
     target_url: Optional[str] = None,
+    timeout: Optional[float] = None,
 ) -> httpx.Response:
     """Forward a buffered request to the target API server.
 
@@ -50,6 +51,7 @@ async def proxy_request(
         body: Optional JSON body.
         headers: Optional extra headers.
         target_url: Optional base URL. Falls back to LM_STUDIO_URL env var.
+        timeout: Optional read timeout in seconds. Uses client default if not set.
 
     Returns:
         httpx.Response from the target server.
@@ -74,9 +76,10 @@ async def proxy_request(
 
     client = get_client()
     try:
-        response = await client.request(
-            method, url, content=request_body, headers=request_headers
-        )
+        kwargs = {"content": request_body, "headers": request_headers}
+        if timeout is not None:
+            kwargs["timeout"] = timeout
+        response = await client.request(method, url, **kwargs)
         duration = time.monotonic() - start_time
         resp_body = response.text if response.content else None
         trace_logger.log_response(

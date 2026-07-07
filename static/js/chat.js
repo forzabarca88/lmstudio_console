@@ -109,9 +109,8 @@ export async function sendMessage(dom) {
                             // Switch indicator text once real content arrives
                             if (!hasContent) {
                                 hasContent = true;
-                                if (dom.streamingIndicator) {
-                                    dom.streamingIndicator.querySelector("span").textContent = "Generating...";
-                                }
+                                const textEl = document.getElementById("streamingIndicatorText");
+                                if (textEl) textEl.textContent = "Generating...";
                             }
                         }
                     } catch (e) {
