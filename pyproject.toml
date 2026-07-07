@@ -1,0 +1,6 @@
+[project]
+name = "lmstudio-console"
+version = "0.1.0"
+description = "Remote web management dashboard for LM Studio"
+requires-python = ">=3.12"
+dependencies = []
