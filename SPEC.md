@@ -14,6 +14,7 @@ The interface must be modern and responsive, with striking design.
 ### Backend
 
 - Use Python 3.12.
+- Use FastAPI.
 - Use `uv` instead of Python calls.
 
 ### Frontend
