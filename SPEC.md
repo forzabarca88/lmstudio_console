@@ -37,6 +37,11 @@ The interface must be modern and responsive, with striking design.
 - Save last used details (e.g. endpoint, model, system prompt, etc) if the user closes the browser.
 - Trace logging of all requests shown on the server side console.
 
+### User Feedback
+
+- UI must show feedback to user for all in-progress states - e.g. connecting, listing model, unloading model, loading model, waiting for chat responses, while streaming chat response until completion, etc.
+- Timeouts must be appropriately set - e.g. loading a model can take up to 5 minutes for large models.
+
 ## Reference
 
 - https://lmstudio.ai/docs-md/developer/rest
