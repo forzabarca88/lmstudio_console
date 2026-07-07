@@ -1,181 +1,220 @@
-"""HTTP server that serves static files and proxies API calls to LM Studio."""
+"""FastAPI server that serves static files and proxies API calls to LM Studio."""
 
-from http.server import HTTPServer, SimpleHTTPRequestHandler
-import json
-import os
-import threading
-from urllib.parse import urlparse
+from contextlib import asynccontextmanager
+from typing import AsyncIterable, Optional
 
-# Configuration
-HOST = os.getenv("LM_CONSOLE_HOST", "0.0.0.0")
-PORT = int(os.getenv("LM_CONSOLE_PORT", "8080"))
-LM_STUDIO_URL = os.getenv("LM_STUDIO_URL", "http://localhost:1234")
-STATIC_DIR = os.path.join(os.path.dirname(__file__), "..", "static")
+import httpx
+import uvicorn
+from fastapi import FastAPI, Request
+from fastapi.responses import StreamingResponse, JSONResponse, FileResponse
+from fastapi.staticfiles import StaticFiles
 
+from backend.config import get_host, get_port, get_lm_studio_url, get_static_dir
+from backend.proxy import proxy_request, proxy_stream_iter, close_client, trace_logger
 
-class ConsoleHandler(SimpleHTTPRequestHandler):
-    """Serves static files and proxies LM Studio API requests."""
+# Hop-by-hop headers that must not be forwarded from upstream responses.
+# JSONResponse computes its own Content-Length; forwarding the upstream value
+# causes h11 LocalProtocolError when re-serialized JSON differs in size.
+_HOP_BY_HOP_HEADERS = {
+    "connection",
+    "keep-alive",
+    "content-length",
+    "content-encoding",
+    "transfer-encoding",
+    "te",
+    "trailer",
+    "upgrade",
+}
 
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, directory=STATIC_DIR, **kwargs)
-
-    # --- Static file serving ---
-
-    def do_GET(self):
-        parsed = urlparse(self.path)
-        path = parsed.path
-
-        # Proxy API calls
-        if path.startswith("/proxy/"):
-            self._proxy_request("GET", path, parsed)
-            return
-
-        # Serve static files
-        super().do_GET()
-
-    def do_POST(self):
-        parsed = urlparse(self.path)
-        path = parsed.path
-
-        if path.startswith("/proxy/"):
-            self._proxy_request("POST", path, parsed)
-            return
-
-        self.send_error(405, "Method not allowed")
-
-    # --- CORS headers ---
-
-    def _add_cors_headers(self):
-        self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-        self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization")
-        self.send_header("Access-Control-Expose-Headers", "Content-Type")
-
-    def do_OPTIONS(self):
-        self.send_response(200)
-        self._add_cors_headers()
-        self.end_headers()
-
-    # --- Proxy logic ---
-
-    def _proxy_request(self, method, path, parsed):
-        """Forward request to LM Studio and return the response."""
-        import urllib.request
-        import urllib.error
-
-        # Strip /proxy prefix to get the LM Studio endpoint
-        lm_path = path[len("/proxy"):]
-
-        # Build target URL
-        target_url = f"{LM_STUDIO_URL}{lm_path}"
-        if parsed.query:
-            target_url += f"?{parsed.query}"
-
-        # Read request body for POST
-        body = None
-        if method == "POST":
-            content_length = int(self.headers.get("Content-Length", 0))
-            if content_length > 0:
-                body = self.rfile.read(content_length)
-
-        # Forward to LM Studio
-        req = urllib.request.Request(target_url, data=body, method=method)
-        req.add_header("Content-Type", "application/json")
-
-        # Forward auth token if present
-        auth = self.headers.get("Authorization")
-        if auth:
-            req.add_header("Authorization", auth)
-
-        try:
-            response = urllib.request.urlopen(req)
-            status = response.status
-            resp_content_type = response.headers.get("Content-Type", "application/json")
-
-            # Check if this is a streaming response (SSE)
-            is_stream = "text/event-stream" in resp_content_type
-
-            if is_stream:
-                self._proxy_stream(response, status, resp_content_type)
-            else:
-                self._proxy_buffered(response, status, resp_content_type)
-
-        except urllib.error.HTTPError as e:
-            resp_content_type = e.headers.get("Content-Type", "application/json")
-            is_stream = "text/event-stream" in resp_content_type
-
-            if is_stream:
-                self._proxy_stream(e, e.code, resp_content_type)
-            else:
-                resp_body = e.read()
-                self.send_response(e.code)
-                self._add_cors_headers()
-                self.send_header("Content-Type", resp_content_type)
-                self.send_header("Content-Length", str(len(resp_body)))
-                self.end_headers()
-                self.wfile.write(resp_body)
-
-        except Exception as e:
-            error_body = json.dumps({
-                "error": str(e),
-                "message": f"Failed to connect to LM Studio at {LM_STUDIO_URL}"
-            }).encode()
-            self.send_response(502)
-            self._add_cors_headers()
-            self.send_header("Content-Type", "application/json")
-            self.send_header("Content-Length", str(len(error_body)))
-            self.end_headers()
-            self.wfile.write(error_body)
-
-    def _proxy_buffered(self, response, status, content_type):
-        """Read entire response and send at once."""
-        resp_body = response.read()
-        self.send_response(status)
-        self._add_cors_headers()
-        self.send_header("Content-Type", content_type)
-        self.send_header("Content-Length", str(len(resp_body)))
-        self.end_headers()
-        self.wfile.write(resp_body)
-
-    def _proxy_stream(self, response, status, content_type):
-        """Stream response in real-time using a background thread."""
-        # Send headers first (no Content-Length for streaming)
-        self.send_response(status)
-        self._add_cors_headers()
-        self.send_header("Content-Type", content_type)
-        self.send_header("Cache-Control", "no-cache")
-        self.send_header("Connection", "keep-alive")
-        self.end_headers()
-
-        # Read from upstream in a background thread and write to client
-        def stream_copy():
-            try:
-                while True:
-                    chunk = response.read(1024)
-                    if not chunk:
-                        break
-                    self.wfile.write(chunk)
-                    self.wfile.flush()
-            except Exception:
-                pass
-
-        t = threading.Thread(target=stream_copy, daemon=True)
-        t.start()
-
-    def log_message(self, format, *args):
-        """Suppress default logging to keep output clean."""
-        pass
+# Header the frontend sends to override the LM Studio target URL.
+_HEADER_LM_STUDIO_URL = "X-LM-Studio-URL"
 
 
-def run():
-    server = HTTPServer((HOST, PORT), ConsoleHandler)
-    print(f"LM Studio Console running at http://{HOST if HOST != '0.0.0.0' else 'localhost'}:{PORT}", flush=True)
-    print(f"Proxying to LM Studio at {LM_STUDIO_URL}", flush=True)
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Application lifespan - prints startup info."""
+    host = get_host()
+    port = get_port()
+    lm_url = get_lm_studio_url()
+    print(f"LM Studio Console running at http://{host if host != '0.0.0.0' else 'localhost'}:{port}", flush=True)
+    print(f"Proxying to LM Studio at {lm_url} (default)", flush=True)
+    yield
+    await close_client()
+
+
+app = FastAPI(
+    title="LM Studio Console",
+    lifespan=lifespan,
+)
+
+
+def _resolve_target_url(request: Request) -> str:
+    """Resolve the target URL from request header, falling back to env var."""
+    return request.headers.get(_HEADER_LM_STUDIO_URL) or get_lm_studio_url()
+
+
+def _make_json_response(response: httpx.Response) -> JSONResponse:
+    """Build a JSONResponse from an upstream httpx Response.
+
+    Filters out hop-by-hop headers that would conflict with JSONResponse's
+    own header computation (e.g. Content-Length mismatch on re-serialized JSON).
+    """
+    safe_headers = {
+        k: v for k, v in response.headers.items()
+        if k not in _HOP_BY_HOP_HEADERS
+    }
+    return JSONResponse(
+        status_code=response.status_code,
+        content=response.json(),
+        headers=safe_headers,
+    )
+
+
+def _error_label(error: Exception) -> str:
+    """Format error for display, using type name when message is empty."""
+    msg = str(error)
+    return msg if msg else type(error).__name__
+
+
+def _handle_proxy_error(method: str, path: str, target: str, error: Exception) -> JSONResponse:
+    """Log a proxy error and return an appropriate error response."""
+    trace_logger.log_server_error(method, path, error)
+    if isinstance(error, httpx.ConnectError):
+        return JSONResponse(
+            status_code=502,
+            content={"error": _error_label(error), "message": f"Failed to connect to {target}"},
+        )
+    elif isinstance(error, httpx.TimeoutException):
+        return JSONResponse(
+            status_code=502,
+            content={"error": _error_label(error), "message": f"Timeout connecting to {target}"},
+        )
+    elif isinstance(error, httpx.HTTPStatusError):
+        return JSONResponse(
+            status_code=error.response.status_code,
+            content=error.response.json() if error.response.content else {"error": str(error)},
+        )
+    else:
+        return JSONResponse(
+            status_code=500,
+            content={"error": str(error), "message": "Internal server error"},
+        )
+
+
+async def _proxy_buffered_request(
+    method: str,
+    path: str,
+    target_url: str,
+    body: Optional[dict] = None,
+    headers: Optional[dict] = None,
+) -> JSONResponse:
+    """Proxy a buffered request and return a JSONResponse.
+
+    Handles all proxy exceptions, logs them, and returns appropriate error responses.
+    """
     try:
-        server.serve_forever()
-    except KeyboardInterrupt:
-        print("\nShutting down...", flush=True)
-        server.server_close()
+        response = await proxy_request(method, f"/{path}", body=body, headers=headers, target_url=target_url)
+        return _make_json_response(response)
+    except (httpx.ConnectError, httpx.TimeoutException, httpx.HTTPStatusError) as e:
+        return _handle_proxy_error(method, path, target_url, e)
+
+
+# --- Routes ---
+
+@app.get("/")
+async def serve_index():
+    """Serve the main HTML page."""
+    return FileResponse(f"{get_static_dir()}/index.html")
+
+
+@app.options("/")
+async def serve_index_options():
+    """Handle CORS preflight for root."""
+    return JSONResponse(status_code=200, content={})
+
+
+@app.get("/proxy/{path:path}")
+async def proxy_get(request: Request, path: str):
+    """Proxy GET requests to the backend API."""
+    auth = request.headers.get("Authorization")
+    headers = {"Authorization": auth} if auth else None
+    target_url = _resolve_target_url(request)
+    return await _proxy_buffered_request("GET", path, target_url, headers=headers)
+
+
+@app.options("/proxy/{path:path}")
+async def proxy_options(path: str):
+    """Handle CORS preflight requests for proxy endpoints."""
+    return JSONResponse(status_code=200, content={})
+
+
+@app.post("/proxy/{path:path}")
+async def proxy_post(request: Request, path: str):
+    """Proxy POST requests to the backend API.
+
+    Handles both buffered responses and streaming (SSE) responses.
+    Streaming is detected by the path containing 'chat/completions'
+    and the body containing stream: true.
+    """
+    auth = request.headers.get("Authorization")
+    headers = {"Authorization": auth} if auth else None
+    body = await request.json()
+    target_url = _resolve_target_url(request)
+
+    # Detect streaming: chat completions with stream=true
+    is_stream = "chat/completions" in path and body.get("stream", False)
+
+    if is_stream:
+        return await _proxy_stream_response(path, target_url, body, headers)
+
+    return await _proxy_buffered_request("POST", path, target_url, body=body, headers=headers)
+
+
+async def _proxy_stream_response(
+    path: str,
+    target_url: str,
+    body: dict,
+    headers: Optional[dict],
+) -> StreamingResponse:
+    """Return a streaming SSE response proxied from the backend."""
+    async def event_generator() -> AsyncIterable[str]:
+        try:
+            async for chunk in proxy_stream_iter("POST", f"/{path}", body=body, headers=headers, target_url=target_url):
+                yield chunk.decode("utf-8", errors="replace")
+        except (httpx.ConnectError, httpx.TimeoutException) as e:
+            trace_logger.log_server_error("POST", path, e)
+            yield f"data: {type(e).__name__}: {e}\n\n"
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+# --- Static file serving ---
+app.mount("/static", StaticFiles(directory=get_static_dir()), name="static")
+
+# --- CORS middleware (added last so it wraps all routes and mounts) ---
+from fastapi.middleware.cors import CORSMiddleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_headers=["Content-Type", "Authorization", _HEADER_LM_STUDIO_URL],
+    expose_headers=["Content-Type"],
+)
+
+
+def run() -> None:
+    """Start the FastAPI server using uvicorn."""
+    host = get_host()
+    port = get_port()
+    uvicorn.run(app, host=host, port=port)
 
 
 if __name__ == "__main__":

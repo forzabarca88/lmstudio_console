@@ -10,21 +10,22 @@ Remote web management dashboard and chat interface for LM Studio.
 - **Markdown**: Messages rendered with full Markdown support
 - **Settings**: Configurable system prompt and temperature
 - **Persistence**: Settings saved to localStorage between sessions
+- **Trace Logging**: Detailed request/response logging on the server console
 
 ## Requirements
 
 - Python 3.12+
 - [uv](https://github.com/astral-sh/uv) for package management
-- LM Studio running with API server enabled
+- LM Studio running with API server enabled (or any OpenAI-compatible endpoint)
 
 ## Usage
 
 ```bash
 # Start the server (default: http://localhost:8080)
-uv run python backend/server.py
+uv run python run.py
 
 # Custom port and LM Studio URL
-LM_CONSOLE_PORT=9090 LM_STUDIO_URL=http://localhost:1234 uv run python backend/server.py
+LM_CONSOLE_PORT=9090 LM_STUDIO_URL=http://localhost:1234 uv run python run.py
 ```
 
 Open `http://localhost:8080` in your browser.
@@ -41,13 +42,33 @@ Open `http://localhost:8080` in your browser.
 
 ```
 ├── backend/
-│   └── server.py      # HTTP server + API proxy
+│   ├── config.py      # Configuration from environment variables
+│   ├── logger.py      # Trace logging for proxy requests
+│   ├── proxy.py       # HTTP proxy service (httpx)
+│   └── server.py      # FastAPI application
 ├── static/
 │   ├── css/
 │   │   └── style.css  # Styles
 │   ├── js/
-│   │   └── app.js     # Application logic
+│   │   ├── api.js     # API call utilities
+│   │   ├── app.js     # Main entry point
+│   │   ├── chat.js    # Chat functionality
+│   │   ├── connection.js  # Connection management
+│   │   ├── models.js  # Model management
+│   │   ├── state.js   # State & localStorage
+│   │   └── ui.js      # UI utilities
 │   └── index.html     # Page structure
+├── tests/
+│   ├── test_config.py
+│   ├── test_logger.py
+│   └── test_server.py
+├── run.py             # Entry point
 ├── pyproject.toml
 └── README.md
+```
+
+## Running Tests
+
+```bash
+uv run python -m unittest discover tests -v
 ```
