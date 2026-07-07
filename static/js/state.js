@@ -16,6 +16,12 @@ export const state = {
     systemPrompt: "You are a helpful assistant.",
     temperature: 0.7,
     streaming: false,
+    // Chat metrics
+    metrics: {
+        tokensPerSecond: 0,
+        timeToFirstToken: null,
+        totalTokens: 0,
+    },
 };
 
 /**

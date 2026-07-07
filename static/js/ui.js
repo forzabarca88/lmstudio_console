@@ -63,3 +63,18 @@ export function autoResizeInput(el) {
 export function scrollToBottom(el) {
     el.scrollTop = el.scrollHeight;
 }
+
+/**
+ * Update the chat metrics display.
+ * @param {Object} dom - DOM element references.
+ * @param {Object} metrics - { tokensPerSecond, timeToFirstToken, totalTokens }
+ */
+export function updateMetrics(dom, metrics = null) {
+    if (!dom.metricTpsValue || !dom.metricTtftValue || !dom.metricTokensValue) return;
+
+    const m = metrics || state.metrics;
+
+    dom.metricTpsValue.textContent = m.tokensPerSecond > 0 ? m.tokensPerSecond.toFixed(1) : "0";
+    dom.metricTtftValue.textContent = m.timeToFirstToken !== null ? m.timeToFirstToken.toFixed(2) + "s" : "—";
+    dom.metricTokensValue.textContent = m.totalTokens.toString();
+}

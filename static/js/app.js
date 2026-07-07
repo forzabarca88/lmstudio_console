@@ -6,7 +6,7 @@ import { state, saveSettings, loadSettings } from "./state.js";
 import { connect, disconnect } from "./connection.js";
 import { refreshModels, loadModel, unloadModel } from "./models.js";
 import { sendMessage, newChat } from "./chat.js";
-import { showToast, autoResizeInput } from "./ui.js";
+import { showToast, autoResizeInput, updateMetrics } from "./ui.js";
 
 /* ═══════════════════════════════════════════
    DOM REFERENCES
@@ -28,6 +28,10 @@ const dom = {
     statusText: document.getElementById("statusText"),
     emptyState: document.getElementById("emptyState"),
     chatHeader: document.getElementById("chatHeader"),
+    chatMetrics: document.getElementById("chatMetrics"),
+    metricTpsValue: document.getElementById("metricTpsValue"),
+    metricTtftValue: document.getElementById("metricTtftValue"),
+    metricTokensValue: document.getElementById("metricTokensValue"),
     chatMessages: document.getElementById("chatMessages"),
     streamingIndicator: document.getElementById("streamingIndicator"),
     chatModelLabel: document.getElementById("chatModelLabel"),

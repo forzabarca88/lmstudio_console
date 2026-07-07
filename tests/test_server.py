@@ -2,7 +2,7 @@
 
 Validates all proxy endpoints the end user interacts with:
 - Static file serving (index.html, CSS, JS)
-- Proxy GET (list models, openai models)
+- Proxy GET (list models via OpenAI compat, LM Studio native)
 - Proxy POST (load model, unload model, chat)
 - Proxy streaming (SSE chat completions)
 - CORS headers
@@ -41,20 +41,6 @@ def _make_httpx_response(status_code=200, json_data=None, text=None, headers=Non
     resp.json = MagicMock(return_value=json_data if json_data else {})
     resp.request = MagicMock()
     return resp
-
-
-def _models_response(models=None):
-    """Build a mock /api/v1/models response."""
-    if models is None:
-        models = [
-            {"key": "llama-3.1-8b", "type": "llm", "display_name": "Llama 3.1 8B",
-             "publisher": "Meta", "loaded_instances": [], "size_bytes": 4900000000},
-            {"key": "mistral-7b", "type": "llm", "display_name": "Mistral 7B",
-             "publisher": "Mistral AI", "loaded_instances": [{"id": "inst-1"}], "size_bytes": 4100000000},
-            {"key": "nomic-embed", "type": "embedding", "display_name": "Nomic Embed",
-             "publisher": "Nomic", "loaded_instances": [], "size_bytes": 220000000},
-        ]
-    return _make_httpx_response(200, {"models": models})
 
 
 def _openai_models_response():
@@ -123,31 +109,19 @@ class TestStaticServing(unittest.TestCase):
         self.assertEqual(resp.status_code, 200)
         self.assertIn("apiCall", resp.text)
 
+    def test_serves_chat_js(self):
+        resp = self.client.get("/static/js/chat.js")
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn("sendMessage", resp.text)
+        # Verify metrics tracking is present
+        self.assertIn("tokensPerSecond", resp.text)
+
 
 class TestProxyGet(unittest.TestCase):
     """Verify GET proxy endpoints."""
 
     def setUp(self):
         self.client = TestClient(server.app)
-
-    @patch("backend.server.proxy_request")
-    def test_proxy_list_models(self, mock_proxy):
-        """Proxy GET /api/v1/models returns model list."""
-        mock_proxy.return_value = _models_response()
-
-        resp = self.client.get("/proxy/api/v1/models")
-        self.assertEqual(resp.status_code, 200)
-        data = resp.json()
-        self.assertIn("models", data)
-        self.assertGreater(len(data["models"]), 0)
-
-        # Verify model structure
-        model = data["models"][0]
-        self.assertIn("key", model)
-        self.assertIn("type", model)
-        self.assertIn("display_name", model)
-        self.assertIn("publisher", model)
-        self.assertIn("loaded_instances", model)
 
     @patch("backend.server.proxy_request")
     def test_proxy_openai_models(self, mock_proxy):
@@ -161,6 +135,21 @@ class TestProxyGet(unittest.TestCase):
         self.assertGreater(len(data["data"]), 0)
         self.assertEqual(data["data"][0]["object"], "model")
         self.assertEqual(data["data"][0]["owned_by"], "organization_owner")
+
+    @patch("backend.server.proxy_request")
+    def test_proxy_lm_studio_models(self, mock_proxy):
+        """Proxy GET /api/v1/models returns LM Studio native format."""
+        mock_proxy.return_value = _make_httpx_response(200, {
+            "models": [
+                {"key": "llama-3.1-8b", "type": "llm", "display_name": "Llama 3.1 8B"},
+            ],
+        })
+
+        resp = self.client.get("/proxy/api/v1/models")
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+        self.assertIn("models", data)
+        self.assertGreater(len(data["models"]), 0)
 
     @patch("backend.server.proxy_request")
     def test_proxy_404_passthrough(self, mock_proxy):
@@ -281,9 +270,9 @@ class TestProxyPost(unittest.TestCase):
     @patch("backend.server.proxy_request")
     def test_auth_header_forwarding(self, mock_proxy):
         """Authorization header is forwarded to upstream."""
-        mock_proxy.return_value = _models_response()
+        mock_proxy.return_value = _openai_models_response()
 
-        resp = self.client.get("/proxy/api/v1/models", headers={"Authorization": "Bearer test-token"})
+        resp = self.client.get("/proxy/v1/models", headers={"Authorization": "Bearer test-token"})
         self.assertEqual(resp.status_code, 200)
 
         # Verify proxy_request was called with the auth header
@@ -300,8 +289,8 @@ class TestCORS(unittest.TestCase):
 
     @patch("backend.server.proxy_request")
     def test_cors_on_proxy_get(self, mock_proxy):
-        mock_proxy.return_value = _models_response()
-        resp = self.client.get("/proxy/api/v1/models", headers={"Origin": "http://example.com"})
+        mock_proxy.return_value = _openai_models_response()
+        resp = self.client.get("/proxy/v1/models", headers={"Origin": "http://example.com"})
         self.assertEqual(resp.headers.get("access-control-allow-origin"), "*")
 
     @patch("backend.server.proxy_request")
@@ -317,7 +306,7 @@ class TestCORS(unittest.TestCase):
 
     @patch("backend.server.proxy_request")
     def test_options_preflight(self, mock_proxy):
-        resp = self.client.options("/proxy/api/v1/models",
+        resp = self.client.options("/proxy/v1/models",
                                     headers={"Origin": "http://example.com"})
         self.assertEqual(resp.status_code, 200)
         self.assertEqual(resp.headers.get("access-control-allow-origin"), "*")

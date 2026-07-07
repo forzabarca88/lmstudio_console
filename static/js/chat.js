@@ -1,10 +1,10 @@
 /**
- * Chat functionality: send messages, handle streaming responses, render messages.
+ * Chat functionality: send messages, handle streaming responses, render messages, track metrics.
  */
 
 import { state } from "./state.js";
 import { apiCallStream } from "./api.js";
-import { showToast, scrollToBottom, autoResizeInput } from "./ui.js";
+import { showToast, scrollToBottom, autoResizeInput, updateMetrics } from "./ui.js";
 
 /**
  * Start a new chat session (clear history).
@@ -13,8 +13,11 @@ import { showToast, scrollToBottom, autoResizeInput } from "./ui.js";
 export function newChat(dom) {
     state.chatMessages = [];
     state.streaming = false;
+    state.metrics = { tokensPerSecond: 0, timeToFirstToken: null, totalTokens: 0 };
     dom.chatMessages.innerHTML = "";
     dom.streamingIndicator.style.display = "none";
+    dom.chatMetrics.style.display = "none";
+    updateMetrics(dom);
     dom.chatInput.disabled = !state.selectedModel;
     dom.sendBtn.disabled = !state.selectedModel;
     showToast("Chat cleared", "info");
@@ -39,11 +42,18 @@ export async function sendMessage(dom) {
     state.chatMessages.push(userMsg);
     appendMessage(dom, userMsg, "user");
 
-    // Show streaming indicator
+    // Show streaming indicator and metrics
     if (dom.streamingIndicator) {
         dom.streamingIndicator.style.display = "flex";
         scrollToBottom(dom.chatMessages);
     }
+    dom.chatMetrics.style.display = "flex";
+
+    // Reset metrics for this turn
+    const metrics = { tokensPerSecond: 0, timeToFirstToken: null, totalTokens: 0 };
+    const streamStart = Date.now();
+    let tokenCount = 0;
+    let firstTokenTime = null;
 
     // Create assistant message placeholder
     const assistantEl = appendMessage(dom, { role: "assistant", content: "" }, "assistant");
@@ -103,15 +113,35 @@ export async function sendMessage(dom) {
 
                         const delta = parsed.choices?.[0]?.delta?.content;
                         if (delta) {
+                            tokenCount++;
                             assistantContent += delta;
                             contentEl.innerHTML = marked.parse(assistantContent);
                             scrollToBottom(dom.chatMessages);
+
+                            // Track time to first token
+                            if (!firstTokenTime) {
+                                firstTokenTime = (Date.now() - streamStart) / 1000;
+                            }
+
                             // Switch indicator text once real content arrives
                             if (!hasContent) {
                                 hasContent = true;
                                 const textEl = document.getElementById("streamingIndicatorText");
                                 if (textEl) textEl.textContent = "Generating...";
                             }
+
+                            // Update live metrics
+                            const elapsed = (Date.now() - streamStart) / 1000;
+                            metrics.tokensPerSecond = elapsed > 0 ? tokenCount / elapsed : 0;
+                            metrics.timeToFirstToken = firstTokenTime;
+                            metrics.totalTokens = tokenCount;
+                            updateMetrics(dom, metrics);
+                        }
+
+                        // Check for usage stats in the final chunk
+                        if (parsed.usage) {
+                            metrics.totalTokens = parsed.usage.total_tokens || tokenCount;
+                            updateMetrics(dom, metrics);
                         }
                     } catch (e) {
                         // If it's our thrown error, propagate it
@@ -131,9 +161,17 @@ export async function sendMessage(dom) {
         // Hide indicator on normal completion
         if (dom.streamingIndicator) dom.streamingIndicator.style.display = "none";
 
+        // Final metrics calculation
+        const totalDuration = (Date.now() - streamStart) / 1000;
+        metrics.tokensPerSecond = totalDuration > 0 ? tokenCount / totalDuration : 0;
+        metrics.timeToFirstToken = firstTokenTime || 0;
+        metrics.totalTokens = tokenCount;
+        updateMetrics(dom, metrics);
+
         // Save final assistant message
         const assistantMsg = { role: "assistant", content: assistantContent };
         state.chatMessages.push(assistantMsg);
+        state.metrics = { ...metrics };
         contentEl.innerHTML = marked.parse(assistantContent);
 
     } catch (e) {

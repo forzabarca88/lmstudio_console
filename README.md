@@ -8,6 +8,7 @@ Remote web management dashboard and chat interface for LM Studio.
 - **Chat Interface**: Full-featured chat with any OpenAI-compatible endpoint
 - **Streaming**: Real-time SSE streaming responses
 - **Markdown**: Messages rendered with full Markdown support
+- **Chat Metrics**: Tokens/second, time to first token, and total tokens displayed live
 - **Settings**: Configurable system prompt and temperature
 - **Persistence**: Settings saved to localStorage between sessions
 - **Trace Logging**: Detailed request/response logging on the server console
@@ -52,11 +53,11 @@ Open `http://localhost:8080` in your browser.
 │   ├── js/
 │   │   ├── api.js     # API call utilities
 │   │   ├── app.js     # Main entry point
-│   │   ├── chat.js    # Chat functionality
+│   │   ├── chat.js    # Chat functionality + metrics
 │   │   ├── connection.js  # Connection management
 │   │   ├── models.js  # Model management
 │   │   ├── state.js   # State & localStorage
-│   │   └── ui.js      # UI utilities
+│   │   └── ui.js      # UI utilities + metrics display
 │   └── index.html     # Page structure
 ├── tests/
 │   ├── test_config.py

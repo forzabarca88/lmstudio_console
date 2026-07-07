@@ -9,6 +9,7 @@ import { renderModelList, disableChatControls } from "./models.js";
 
 /**
  * Connect to the configured endpoint.
+ * Uses OpenAI-compatible /v1/models endpoint for universal compatibility.
  * @param {Object} dom - DOM element references.
  */
 export async function connect(dom) {
@@ -22,19 +23,27 @@ export async function connect(dom) {
     saveSettings();
 
     state.status = "connecting";
-    updateStatus(dom, null, "connecting");
+    updateStatus(dom, null, "Connecting...");
     dom.connectBtn.textContent = "Connecting...";
     dom.connectBtn.disabled = true;
 
     try {
-        const data = await apiCall("/api/v1/models");
+        // Use OpenAI-compatible endpoint for universal compatibility
+        const data = await apiCall("/v1/models");
         state.connected = true;
         state.status = "connected";
-        state.models = data.models || [];
+
+        // Transform OpenAI model format to internal format
+        state.models = (data.data || []).map(m => ({
+            key: m.id,
+            type: "llm",
+            display_name: m.id,
+            loaded_instances: [],
+        }));
 
         updateStatus(dom, true);
         dom.connectBtn.textContent = "Disconnect";
-        showToast("Connected to LM Studio", "success");
+        showToast(`Connected - ${state.models.length} models found`, "success");
 
         renderModelList(dom);
         enableChatControls(dom);
@@ -60,12 +69,13 @@ export function disconnect(dom) {
     state.loadedModels.clear();
     state.selectedModel = null;
     state.chatMessages = [];
+    state.metrics = { tokensPerSecond: 0, timeToFirstToken: null, totalTokens: 0 };
     dom.chatMessages.innerHTML = "";
 
     updateStatus(dom, false);
     dom.connectBtn.textContent = "Connect";
     dom.modelList.innerHTML = `<li class="empty-state" style="flex:unset;padding:20px 0;">
-        <div class="empty-subtitle">Connect to LM Studio to see available models</div>
+        <div class="empty-subtitle">Connect to an OpenAI-compatible endpoint to see available models</div>
     </li>`;
     disableChatControls(dom);
     showToast("Disconnected", "info");
@@ -108,6 +118,7 @@ export function enableChatControls(dom) {
         dom.emptyState.style.display = "none";
         dom.chatHeader.style.display = "flex";
         dom.chatMessages.style.display = "flex";
+        dom.chatMetrics.style.display = "flex";
 
         const model = state.models.find(m => m.key === state.selectedModel);
         dom.chatModelLabel.textContent = model?.display_name || state.selectedModel;
@@ -115,5 +126,6 @@ export function enableChatControls(dom) {
         dom.emptyState.style.display = "flex";
         dom.chatHeader.style.display = "none";
         dom.chatMessages.style.display = "none";
+        dom.chatMetrics.style.display = "none";
     }
 }

@@ -1,14 +1,15 @@
 /**
  * Model management: list, refresh, load, unload models.
+ * Works with OpenAI-compatible endpoints.
  */
 
 import { state, saveSettings } from "./state.js";
 import { apiCall } from "./api.js";
-import { showToast, formatBytes, escapeHtml } from "./ui.js";
+import { showToast, formatBytes, escapeHtml, updateMetrics } from "./ui.js";
 import { enableChatControls, updateStatus } from "./connection.js";
 
 /**
- * Refresh the model list from the server.
+ * Refresh the model list from the server using OpenAI-compatible endpoint.
  * @param {Object} dom - DOM element references.
  */
 export async function refreshModels(dom) {
@@ -23,21 +24,25 @@ export async function refreshModels(dom) {
     dom.refreshModelsBtn.disabled = true;
 
     try {
-        const data = await apiCall("/api/v1/models");
-        state.models = data.models || [];
-        state.status = "connected";
+        const data = await apiCall("/v1/models");
+        // Transform OpenAI model format to internal format
+        state.models = (data.data || []).map(m => ({
+            key: m.id,
+            type: "llm",
+            display_name: m.id,
+            loaded_instances: [],
+        }));
 
-        // Track which models are loaded
-        state.loadedModels.clear();
+        // Restore loaded model state (from previously loaded models)
         for (const model of state.models) {
-            if (model.loaded_instances && model.loaded_instances.length > 0) {
-                for (const inst of model.loaded_instances) {
-                    state.loadedModels.add(inst.id);
-                }
+            if (state.loadedModels.has(model.key)) {
+                model.loaded_instances = [{ id: model.key }];
             }
         }
 
+        state.status = "connected";
         renderModelList(dom);
+        enableChatControls(dom);
         updateStatus(dom, true);
         showToast(`Found ${state.models.length} models`, "info");
     } catch (e) {
@@ -59,7 +64,7 @@ export function renderModelList(dom) {
 
     if (llmModels.length === 0) {
         dom.modelList.innerHTML = `<li class="empty-state" style="flex:unset;padding:20px 0;">
-            <div class="empty-subtitle">No LLM models available</div>
+            <div class="empty-subtitle">No models available</div>
         </li>`;
         return;
     }
@@ -69,18 +74,11 @@ export function renderModelList(dom) {
                          (model.loaded_instances && model.loaded_instances.length > 0);
         const isSelected = state.selectedModel === model.key;
 
-        const sizeStr = model.size_bytes ? formatBytes(model.size_bytes) : "";
-        const paramsStr = model.params_string || "";
-        const quantStr = model.quantization?.name || "";
-        const pubStr = model.publisher || "";
-        const meta = [pubStr, paramsStr, quantStr, sizeStr].filter(Boolean).join(" · ");
-
         return `<li class="model-item ${isLoaded ? 'loaded' : ''} ${isSelected ? 'selected' : ''}"
                      data-key="${model.key}"
                      data-instance-id="${model.loaded_instances?.[0]?.id || model.key}">
             <div class="model-info">
                 <div class="model-name">${escapeHtml(model.display_name || model.key)}</div>
-                <div class="model-meta">${meta}</div>
             </div>
             ${isLoaded ? '<span class="model-badge badge-loaded">loaded</span>' : ''}
         </li>`;
@@ -94,6 +92,8 @@ export function renderModelList(dom) {
                 // Switching models - clear chat history
                 state.chatMessages = [];
                 dom.chatMessages.innerHTML = "";
+                state.metrics = { tokensPerSecond: 0, timeToFirstToken: null, totalTokens: 0 };
+                updateMetrics(dom, state.metrics);
             }
             state.selectedModel = key;
             renderModelList(dom);
@@ -103,7 +103,7 @@ export function renderModelList(dom) {
 }
 
 /**
- * Load the selected model.
+ * Load the selected model using LM Studio native API.
  * @param {Object} dom - DOM element references.
  */
 export async function loadModel(dom) {
@@ -146,7 +146,7 @@ export async function loadModel(dom) {
 }
 
 /**
- * Unload the selected model.
+ * Unload the selected model using LM Studio native API.
  * @param {Object} dom - DOM element references.
  */
 export async function unloadModel(dom) {
@@ -170,6 +170,8 @@ export async function unloadModel(dom) {
     if (model) model.loaded_instances = [];
     state.selectedModel = null;
     state.chatMessages = [];
+    state.metrics = { tokensPerSecond: 0, timeToFirstToken: null, totalTokens: 0 };
+    updateMetrics(dom, state.metrics);
     dom.chatMessages.innerHTML = "";
     if (dom.streamingIndicator) dom.streamingIndicator.style.display = "none";
     renderModelList(dom);
@@ -207,8 +209,11 @@ export function disableChatControls(dom) {
     dom.emptyState.style.display = "flex";
     dom.chatHeader.style.display = "none";
     dom.chatMessages.style.display = "none";
+    dom.chatMetrics.style.display = "none";
     if (dom.streamingIndicator) dom.streamingIndicator.style.display = "none";
     state.selectedModel = null;
     state.chatMessages = [];
     state.streaming = false;
+    state.metrics = { tokensPerSecond: 0, timeToFirstToken: null, totalTokens: 0 };
+    updateMetrics(dom, state.metrics);
 }

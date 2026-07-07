@@ -409,6 +409,40 @@ input[type="range"] {
 }
 
 /* ═══════════════════════════════════════════
+   CHAT METRICS BAR
+   ═══════════════════════════════════════════ */
+.chat-metrics {
+    display: flex;
+    align-items: center;
+    gap: 20px;
+    padding: 8px 24px;
+    background: var(--bg-elevated);
+    border-bottom: 1px solid var(--border);
+    border-top: 1px solid var(--border);
+}
+
+.metric-item {
+    display: flex;
+    align-items: baseline;
+    gap: 6px;
+}
+
+.metric-label {
+    font-family: var(--font-mono);
+    font-size: 0.62rem;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+}
+
+.metric-value {
+    font-family: var(--font-mono);
+    font-size: 0.78rem;
+    color: var(--accent-bright);
+    font-weight: 600;
+}
+
+/* ═══════════════════════════════════════════
    CHAT AREA
    ═══════════════════════════════════════════ */
 .chat-area {
