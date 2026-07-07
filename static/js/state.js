@@ -33,6 +33,7 @@ export function saveSettings() {
         apiToken: state.apiToken,
         systemPrompt: state.systemPrompt,
         temperature: state.temperature,
+        selectedModel: state.selectedModel,
     };
     localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings));
 }
@@ -61,6 +62,9 @@ export function loadSettings(dom) {
                 state.temperature = saved.temperature;
                 dom.temperature.value = saved.temperature;
                 dom.temperatureValue.textContent = saved.temperature.toFixed(2);
+            }
+            if (saved.selectedModel) {
+                state.selectedModel = saved.selectedModel;
             }
         }
     } catch (e) {

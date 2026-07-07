@@ -41,6 +41,12 @@ export async function connect(dom) {
             loaded_instances: [],
         }));
 
+        // Validate saved selected model exists in the fetched list
+        if (state.selectedModel && !state.models.some(m => m.key === state.selectedModel)) {
+            state.selectedModel = null;
+            saveSettings();
+        }
+
         updateStatus(dom, true);
         dom.connectBtn.textContent = "Disconnect";
         showToast(`Connected - ${state.models.length} models found`, "success");
@@ -114,6 +120,8 @@ export function enableChatControls(dom) {
     dom.chatInput.disabled = !hasLoadedModel;
     dom.sendBtn.disabled = !hasLoadedModel;
 
+    const hasChatMessages = state.chatMessages.length > 0;
+
     if (hasLoadedModel && state.selectedModel) {
         dom.emptyState.style.display = "none";
         dom.chatHeader.style.display = "flex";
@@ -122,7 +130,18 @@ export function enableChatControls(dom) {
 
         const model = state.models.find(m => m.key === state.selectedModel);
         dom.chatModelLabel.textContent = model?.display_name || state.selectedModel;
-    } else if (!hasLoadedModel) {
+    } else if (hasChatMessages) {
+        // Show existing chat in read-only mode (no model loaded)
+        dom.emptyState.style.display = "none";
+        dom.chatHeader.style.display = "flex";
+        dom.chatMessages.style.display = "flex";
+        dom.chatMetrics.style.display = "flex";
+
+        if (state.selectedModel) {
+            const model = state.models.find(m => m.key === state.selectedModel);
+            dom.chatModelLabel.textContent = model?.display_name || state.selectedModel;
+        }
+    } else {
         dom.emptyState.style.display = "flex";
         dom.chatHeader.style.display = "none";
         dom.chatMessages.style.display = "none";

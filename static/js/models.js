@@ -88,14 +88,8 @@ export function renderModelList(dom) {
     dom.modelList.querySelectorAll(".model-item").forEach(item => {
         item.addEventListener("click", () => {
             const key = item.dataset.key;
-            if (state.selectedModel !== key) {
-                // Switching models - clear chat history
-                state.chatMessages = [];
-                dom.chatMessages.innerHTML = "";
-                state.metrics = { tokensPerSecond: 0, timeToFirstToken: null, totalTokens: 0 };
-                updateMetrics(dom, state.metrics);
-            }
             state.selectedModel = key;
+            saveSettings();
             renderModelList(dom);
             enableChatControls(dom);
         });
@@ -168,12 +162,6 @@ export async function unloadModel(dom) {
     // Optimistically update UI immediately
     state.loadedModels.delete(instanceId);
     if (model) model.loaded_instances = [];
-    state.selectedModel = null;
-    state.chatMessages = [];
-    state.metrics = { tokensPerSecond: 0, timeToFirstToken: null, totalTokens: 0 };
-    updateMetrics(dom, state.metrics);
-    dom.chatMessages.innerHTML = "";
-    if (dom.streamingIndicator) dom.streamingIndicator.style.display = "none";
     renderModelList(dom);
     disableChatControls(dom);
 
@@ -188,6 +176,7 @@ export async function unloadModel(dom) {
         state.loadedModels.add(instanceId);
         if (model) model.loaded_instances = savedInstances;
         state.selectedModel = model.key;
+        saveSettings();
         state.status = "connected";
         renderModelList(dom);
         enableChatControls(dom);
@@ -206,14 +195,27 @@ export async function unloadModel(dom) {
 export function disableChatControls(dom) {
     dom.chatInput.disabled = true;
     dom.sendBtn.disabled = true;
-    dom.emptyState.style.display = "flex";
-    dom.chatHeader.style.display = "none";
-    dom.chatMessages.style.display = "none";
-    dom.chatMetrics.style.display = "none";
     if (dom.streamingIndicator) dom.streamingIndicator.style.display = "none";
+
+    const prevSelectedModel = state.selectedModel;
     state.selectedModel = null;
-    state.chatMessages = [];
     state.streaming = false;
-    state.metrics = { tokensPerSecond: 0, timeToFirstToken: null, totalTokens: 0 };
-    updateMetrics(dom, state.metrics);
+    saveSettings();
+
+    // Show existing chat in read-only mode when no model is loaded
+    if (state.chatMessages.length > 0) {
+        dom.emptyState.style.display = "none";
+        dom.chatHeader.style.display = "flex";
+        dom.chatMessages.style.display = "flex";
+        dom.chatMetrics.style.display = "flex";
+        if (prevSelectedModel) {
+            const model = state.models.find(m => m.key === prevSelectedModel);
+            dom.chatModelLabel.textContent = model?.display_name || prevSelectedModel;
+        }
+    } else {
+        dom.emptyState.style.display = "flex";
+        dom.chatHeader.style.display = "none";
+        dom.chatMessages.style.display = "none";
+        dom.chatMetrics.style.display = "none";
+    }
 }
