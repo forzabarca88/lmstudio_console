@@ -443,6 +443,55 @@ input[type="range"] {
 }
 
 /* ═══════════════════════════════════════════
+   COPY BUTTON
+   ═══════════════════════════════════════════ */
+.copy-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 4px;
+    padding: 3px 8px;
+    font-family: var(--font-mono);
+    font-size: 0.58rem;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    background: var(--bg-surface);
+    color: var(--text-muted);
+    cursor: pointer;
+    transition: all 0.15s;
+    margin-top: 6px;
+}
+
+.copy-btn:hover {
+    border-color: var(--accent);
+    color: var(--text-secondary);
+    background: var(--bg-elevated);
+}
+
+.copy-btn.copied {
+    border-color: var(--success);
+    color: var(--success);
+}
+
+/* ═══════════════════════════════════════════
+   MERMAID DIAGRAMS
+   ═══════════════════════════════════════════ */
+.message-text .mermaid {
+    background: var(--bg-input);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    padding: 16px;
+    margin: 0.75em 0;
+    text-align: center;
+    overflow-x: auto;
+}
+
+.message-text .mermaid svg {
+    max-width: 100%;
+    height: auto;
+}
+
+/* ═══════════════════════════════════════════
    CHAT AREA
    ═══════════════════════════════════════════ */
 .chat-area {
@@ -570,6 +619,10 @@ input[type="range"] {
     background: none;
     padding: 0;
     color: var(--text-primary);
+}
+
+.message-text pre.mermaid-pre {
+    display: none; /* hidden, rendered as SVG by mermaid */
 }
 .message-text ul, .message-text ol {
     margin: 0.5em 0;
@@ -926,6 +979,126 @@ input[type="range"] {
 :focus-visible {
     outline: 2px solid var(--accent);
     outline-offset: 2px;
+}
+
+/* ═══════════════════════════════════════════
+   HISTORY PANEL
+   ═══════════════════════════════════════════ */
+.history-toggle {
+    width: 100%;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 10px 20px;
+    background: none;
+    border: none;
+    border-bottom: 1px solid var(--border);
+    color: var(--text-secondary);
+    font-family: var(--font-mono);
+    font-size: 0.72rem;
+    cursor: pointer;
+    transition: color 0.15s;
+}
+
+.history-toggle:hover { color: var(--text-primary); }
+
+.history-toggle .chevron {
+    transition: transform 0.2s;
+    font-size: 0.6rem;
+}
+
+.history-toggle.open .chevron {
+    transform: rotate(180deg);
+}
+
+.history-panel {
+    max-height: 0;
+    overflow: hidden;
+    transition: max-height 0.3s ease, overflow 0s 0.3s;
+}
+
+.history-panel.open {
+    max-height: none;
+    overflow: visible;
+    transition: max-height 0.3s ease, overflow 0s 0s;
+}
+
+.history-list {
+    list-style: none;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    max-height: 300px;
+    overflow-y: auto;
+}
+
+.history-item {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    padding: 10px 12px;
+    border-radius: var(--radius-sm);
+    background: var(--bg-input);
+    border: 1px solid var(--border);
+    cursor: pointer;
+    transition: background 0.15s, border-color 0.15s;
+    gap: 8px;
+}
+
+.history-item:hover {
+    background: var(--bg-surface);
+    border-color: var(--accent);
+}
+
+.history-info {
+    flex: 1;
+    min-width: 0;
+}
+
+.history-preview {
+    font-family: var(--font-mono);
+    font-size: 0.72rem;
+    color: var(--text-primary);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.history-meta {
+    font-family: var(--font-mono);
+    font-size: 0.58rem;
+    color: var(--text-muted);
+    margin-top: 3px;
+}
+
+.history-actions {
+    display: flex;
+    gap: 4px;
+    flex-shrink: 0;
+}
+
+.history-btn {
+    padding: 3px 8px;
+    font-family: var(--font-mono);
+    font-size: 0.6rem;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    background: var(--bg-surface);
+    color: var(--text-secondary);
+    cursor: pointer;
+    transition: all 0.15s;
+    white-space: nowrap;
+}
+
+.history-btn:hover {
+    border-color: var(--accent);
+    color: var(--text-primary);
+}
+
+.history-btn.delete-btn:hover {
+    border-color: var(--danger);
+    color: var(--danger);
+    background: rgba(239, 68, 68, 0.08);
 }
 
 /* ═══════════════════════════════════════════
