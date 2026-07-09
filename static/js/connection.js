@@ -5,7 +5,7 @@
 import { state, saveSettings } from "./state.js";
 import { apiCall } from "./api.js";
 import { showToast } from "./ui.js";
-import { renderModelList, disableChatControls } from "./models.js";
+import { renderModelList, disableChatControls, syncLoadedModels } from "./models.js";
 
 /**
  * Connect to the configured endpoint.
@@ -28,7 +28,7 @@ export async function connect(dom) {
     dom.connectBtn.disabled = true;
 
     try {
-        // Use OpenAI-compatible endpoint for universal compatibility
+        // Use OpenAI-compatible endpoint for universal model listing
         const data = await apiCall("/v1/models");
         state.connected = true;
         state.status = "connected";
@@ -41,6 +41,9 @@ export async function connect(dom) {
             loaded_instances: [],
         }));
 
+        // Sync loaded state from the server
+        await syncLoadedModels();
+
         // Validate saved selected model exists in the fetched list
         if (state.selectedModel && !state.models.some(m => m.key === state.selectedModel)) {
             state.selectedModel = null;
@@ -49,7 +52,12 @@ export async function connect(dom) {
 
         updateStatus(dom, true);
         dom.connectBtn.textContent = "Disconnect";
-        showToast(`Connected - ${state.models.length} models found`, "success");
+        const loadedCount = state.loadedModels.size;
+        if (loadedCount > 0) {
+            showToast(`Connected — ${state.models.length} models, ${loadedCount} loaded`, "info");
+        } else {
+            showToast(`Connected — ${state.models.length} models found`, "success");
+        }
 
         renderModelList(dom);
         enableChatControls(dom);
@@ -113,8 +121,7 @@ export function updateStatus(dom, connected, statusText = null) {
  */
 export function enableChatControls(dom) {
     const hasLoadedModel = state.models.some(m =>
-        m.type === "llm" &&
-        (state.loadedModels.has(m.key) || (m.loaded_instances && m.loaded_instances.length > 0))
+        m.type === "llm" && m.loaded_instances && m.loaded_instances.length > 0
     );
 
     dom.chatInput.disabled = !hasLoadedModel;

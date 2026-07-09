@@ -9,6 +9,35 @@ import { showToast, formatBytes, escapeHtml, updateMetrics } from "./ui.js";
 import { enableChatControls, updateStatus } from "./connection.js";
 
 /**
+ * Sync loaded model state from the LM Studio native API.
+ * Updates state.loadedModels and model.loaded_instances to reflect
+ * what the server actually has loaded at this moment.
+ * Silently fails if the endpoint is not LM Studio.
+ */
+export async function syncLoadedModels() {
+    try {
+        const lmData = await apiCall("/api/v1/models");
+        const lmModels = lmData.models || [];
+        state.loadedModels.clear();
+        for (const lmModel of lmModels) {
+            const model = state.models.find(m => m.key === lmModel.key);
+            if (model) {
+                if (lmModel.loaded_instances && lmModel.loaded_instances.length > 0) {
+                    model.loaded_instances = lmModel.loaded_instances;
+                    for (const inst of lmModel.loaded_instances) {
+                        state.loadedModels.add(inst.id);
+                    }
+                } else {
+                    model.loaded_instances = [];
+                }
+            }
+        }
+    } catch {
+        // Non-LM Studio endpoint — no loaded model info available
+    }
+}
+
+/**
  * Refresh the model list from the server using OpenAI-compatible endpoint.
  * @param {Object} dom - DOM element references.
  */
@@ -33,12 +62,8 @@ export async function refreshModels(dom) {
             loaded_instances: [],
         }));
 
-        // Restore loaded model state (from previously loaded models)
-        for (const model of state.models) {
-            if (state.loadedModels.has(model.key)) {
-                model.loaded_instances = [{ id: model.key }];
-            }
-        }
+        // Sync loaded state from the server
+        await syncLoadedModels();
 
         state.status = "connected";
         renderModelList(dom);
@@ -70,8 +95,7 @@ export function renderModelList(dom) {
     }
 
     dom.modelList.innerHTML = llmModels.map(model => {
-        const isLoaded = state.loadedModels.has(model.key) ||
-                         (model.loaded_instances && model.loaded_instances.length > 0);
+        const isLoaded = model.loaded_instances && model.loaded_instances.length > 0;
         const isSelected = state.selectedModel === model.key;
 
         return `<li class="model-item ${isLoaded ? 'loaded' : ''} ${isSelected ? 'selected' : ''}"
