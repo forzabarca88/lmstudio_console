@@ -2,10 +2,11 @@
  * Main entry point - wires all modules together and binds events.
  */
 
-import { state, saveSettings, loadSettings } from "./state.js";
+import { state, saveSettings, loadSettings, saveSessionHistory } from "./state.js";
 import { connect, disconnect } from "./connection.js";
 import { refreshModels, loadModel, unloadModel } from "./models.js";
 import { sendMessage, newChat } from "./chat.js";
+import { renderHistoryList, continueSession, deleteSession } from "./history.js";
 import { showToast, autoResizeInput, updateMetrics } from "./ui.js";
 
 /* ═══════════════════════════════════════════
@@ -24,6 +25,9 @@ const dom = {
     systemPrompt: document.getElementById("systemPrompt"),
     temperature: document.getElementById("temperature"),
     temperatureValue: document.getElementById("temperatureValue"),
+    historyToggle: document.getElementById("historyToggle"),
+    historyPanel: document.getElementById("historyPanel"),
+    historyList: document.getElementById("historyList"),
     statusDot: document.getElementById("statusDot"),
     statusText: document.getElementById("statusText"),
     emptyState: document.getElementById("emptyState"),
@@ -77,6 +81,12 @@ dom.settingsToggle.addEventListener("click", () => {
     dom.settingsPanel.classList.toggle("open");
 });
 
+// History panel toggle
+dom.historyToggle.addEventListener("click", () => {
+    dom.historyToggle.classList.toggle("open");
+    dom.historyPanel.classList.toggle("open");
+});
+
 // Settings persistence
 dom.systemPrompt.addEventListener("change", () => {
     state.systemPrompt = dom.systemPrompt.value;
@@ -112,3 +122,4 @@ dom.sidebarToggle.addEventListener("click", () => {
    ═══════════════════════════════════════════ */
 loadSettings(dom);
 autoResizeInput(dom.chatInput);
+renderHistoryList(dom);

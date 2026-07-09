@@ -133,6 +133,12 @@ async def serve_index():
     return FileResponse(f"{get_static_dir()}/index.html")
 
 
+@app.get("/favicon.ico")
+async def serve_favicon():
+    """Serve the favicon."""
+    return FileResponse(f"{get_static_dir()}/favicon.svg", media_type="image/svg+xml")
+
+
 @app.options("/")
 async def serve_index_options():
     """Handle CORS preflight for root."""

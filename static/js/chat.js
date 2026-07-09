@@ -2,16 +2,35 @@
  * Chat functionality: send messages, handle streaming responses, render messages, track metrics.
  */
 
-import { state } from "./state.js";
-import { apiCallStream } from "./api.js";
+import { state, saveSettings, saveCurrentSession, saveSessionHistory } from "./state.js";
+import { apiCallStream, apiCall } from "./api.js";
 import { showToast, scrollToBottom, autoResizeInput, updateMetrics } from "./ui.js";
+import { renderHistoryList } from "./history.js";
+
+// Initialize mermaid
+try {
+    mermaid.initialize({
+        startOnLoad: false,
+        theme: "dark",
+        securityLevel: "loose",
+    });
+} catch (e) {
+    // mermaid may not be loaded yet
+}
 
 /**
  * Start a new chat session (clear history).
  * @param {Object} dom - DOM element references.
  */
 export function newChat(dom) {
+    // Save current session before clearing
+    if (state.chatMessages.length > 0) {
+        saveCurrentSession();
+        renderHistoryList(dom);
+    }
+
     state.chatMessages = [];
+    state.currentSessionId = null;
     state.streaming = false;
     state.metrics = { tokensPerSecond: 0, timeToFirstToken: null, totalTokens: 0 };
     dom.chatMessages.innerHTML = "";
@@ -115,7 +134,7 @@ export async function sendMessage(dom) {
                         if (delta) {
                             tokenCount++;
                             assistantContent += delta;
-                            contentEl.innerHTML = marked.parse(assistantContent);
+                            renderContent(contentEl, assistantContent);
                             scrollToBottom(dom.chatMessages);
 
                             // Track time to first token
@@ -172,7 +191,11 @@ export async function sendMessage(dom) {
         const assistantMsg = { role: "assistant", content: assistantContent };
         state.chatMessages.push(assistantMsg);
         state.metrics = { ...metrics };
-        contentEl.innerHTML = marked.parse(assistantContent);
+        renderContent(contentEl, assistantContent);
+
+        // Save session to history
+        saveCurrentSession();
+        renderHistoryList(dom);
 
     } catch (e) {
         // Hide streaming indicator on error
@@ -203,6 +226,48 @@ export async function sendMessage(dom) {
 }
 
 /**
+ * Render content with markdown and mermaid support.
+ * @param {HTMLElement} el - The element to render into
+ * @param {string} content - Raw markdown content
+ */
+export async function renderContent(el, content) {
+    // Check for mermaid code blocks
+    const mermaidRegex = /```mermaid\s*([\s\S]*?)```/g;
+    const hasMermaid = mermaidRegex.test(content);
+
+    if (hasMermaid) {
+        // Render markdown first
+        el.innerHTML = marked.parse(content);
+
+        // Find mermaid blocks and render them
+        const preElements = el.querySelectorAll("pre");
+        let mermaidId = 0;
+
+        for (const pre of preElements) {
+            const code = pre.querySelector("code");
+            if (code && code.classList.contains("mermaid")) {
+                const graphDef = code.textContent;
+                const svgId = `mermaid-${mermaidId++}`;
+
+                try {
+                    const { svg } = await mermaid.render(svgId, graphDef);
+                    pre.classList.add("mermaid-pre");
+                    const svgDiv = document.createElement("div");
+                    svgDiv.className = "mermaid";
+                    svgDiv.innerHTML = svg;
+                    pre.parentNode.insertBefore(svgDiv, pre.nextSibling);
+                } catch (e) {
+                    // If mermaid rendering fails, show the raw code
+                    pre.classList.remove("mermaid-pre");
+                }
+            }
+        }
+    } else {
+        el.innerHTML = marked.parse(content);
+    }
+}
+
+/**
  * Append a message to the chat and render it.
  * @param {Object} dom
  * @param {Object} msg - { role, content }
@@ -220,11 +285,48 @@ export function appendMessage(dom, msg, role) {
         <div class="message-avatar">${avatar}</div>
         <div class="message-content">
             <div class="message-role">${roleLabel}</div>
-            <div class="message-text">${msg.content ? marked.parse(msg.content) : ''}</div>
+            <div class="message-text"></div>
+            ${role === "assistant" ? '<button class="copy-btn" title="Copy to clipboard">Copy</button>' : ''}
         </div>
     `;
+
+    const contentEl = el.querySelector(".message-text");
+    renderContent(contentEl, msg.content || "");
+
+    // Copy button handler
+    const copyBtn = el.querySelector(".copy-btn");
+    if (copyBtn) {
+        copyBtn.addEventListener("click", async (e) => {
+            e.stopPropagation();
+            try {
+                await navigator.clipboard.writeText(msg.content || "");
+                copyBtn.textContent = "Copied!";
+                copyBtn.classList.add("copied");
+                setTimeout(() => {
+                    copyBtn.textContent = "Copy";
+                    copyBtn.classList.remove("copied");
+                }, 2000);
+            } catch {
+                // Fallback for older browsers
+                const textarea = document.createElement("textarea");
+                textarea.value = msg.content || "";
+                document.body.appendChild(textarea);
+                textarea.select();
+                document.execCommand("copy");
+                document.body.removeChild(textarea);
+                copyBtn.textContent = "Copied!";
+                copyBtn.classList.add("copied");
+                setTimeout(() => {
+                    copyBtn.textContent = "Copy";
+                    copyBtn.classList.remove("copied");
+                }, 2000);
+            }
+        });
+    }
 
     dom.chatMessages.appendChild(el);
     scrollToBottom(dom.chatMessages);
     return el;
 }
+
+

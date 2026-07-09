@@ -3,6 +3,7 @@
  */
 
 const SETTINGS_KEY = "lm_console_settings";
+const HISTORY_KEY = "lm_console_history";
 
 export const state = {
     endpoint: "http://localhost:1234",
@@ -22,6 +23,11 @@ export const state = {
         timeToFirstToken: null,
         totalTokens: 0,
     },
+    // Session history
+    sessionHistory: [],
+    currentSessionId: null,
+    // Heartbeat
+    heartbeatInterval: null,
 };
 
 /**
@@ -36,6 +42,49 @@ export function saveSettings() {
         selectedModel: state.selectedModel,
     };
     localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings));
+}
+
+/**
+ * Save current chat as a session in history.
+ */
+export function saveCurrentSession() {
+    if (state.chatMessages.length === 0) return;
+    const session = {
+        id: state.currentSessionId || crypto.randomUUID(),
+        createdAt: new Date().toISOString(),
+        model: state.selectedModel || null,
+        messages: [...state.chatMessages],
+        preview: state.chatMessages[0]?.content?.substring(0, 80) || "Chat session",
+    };
+    // Remove existing session with same id (if continuing)
+    state.sessionHistory = state.sessionHistory.filter(s => s.id !== session.id);
+    // Add to front
+    state.sessionHistory.unshift(session);
+    // Keep last 10
+    if (state.sessionHistory.length > 10) {
+        state.sessionHistory = state.sessionHistory.slice(0, 10);
+    }
+    state.currentSessionId = session.id;
+    localStorage.setItem(HISTORY_KEY, JSON.stringify(state.sessionHistory));
+}
+
+/**
+ * Load session history from localStorage.
+ */
+export function loadSessionHistory() {
+    try {
+        const saved = JSON.parse(localStorage.getItem(HISTORY_KEY));
+        state.sessionHistory = saved || [];
+    } catch {
+        state.sessionHistory = [];
+    }
+}
+
+/**
+ * Save session history to localStorage.
+ */
+export function saveSessionHistory() {
+    localStorage.setItem(HISTORY_KEY, JSON.stringify(state.sessionHistory));
 }
 
 /**
@@ -70,4 +119,5 @@ export function loadSettings(dom) {
     } catch (e) {
         // Ignore parse errors from corrupt localStorage
     }
+    loadSessionHistory();
 }

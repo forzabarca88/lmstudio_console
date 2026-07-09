@@ -165,6 +165,7 @@ export async function loadModel(dom) {
 
 /**
  * Unload the selected model using LM Studio native API.
+ * Preserves existing chat messages per spec.
  * @param {Object} dom - DOM element references.
  */
 export async function unloadModel(dom) {
@@ -187,10 +188,36 @@ export async function unloadModel(dom) {
     state.loadedModels.delete(instanceId);
     if (model) model.loaded_instances = [];
     renderModelList(dom);
-    disableChatControls(dom);
+
+    // Disable input but preserve chat messages
+    dom.chatInput.disabled = true;
+    dom.sendBtn.disabled = true;
+    if (dom.streamingIndicator) dom.streamingIndicator.style.display = "none";
+
+    // Show existing chat in read-only mode
+    if (state.chatMessages.length > 0) {
+        dom.emptyState.style.display = "none";
+        dom.chatHeader.style.display = "flex";
+        dom.chatMessages.style.display = "flex";
+        dom.chatMetrics.style.display = "flex";
+        const prevModel = state.models.find(m => m.key === state.selectedModel);
+        if (dom.chatModelLabel) {
+            dom.chatModelLabel.textContent = prevModel?.display_name || state.selectedModel;
+        }
+    } else {
+        dom.emptyState.style.display = "flex";
+        dom.chatHeader.style.display = "none";
+        dom.chatMessages.style.display = "none";
+        dom.chatMetrics.style.display = "none";
+    }
 
     try {
         await apiCall("/api/v1/models/unload", "POST", { instance_id: instanceId });
+
+        const prevSelectedModel = state.selectedModel;
+        state.selectedModel = null;
+        state.streaming = false;
+        saveSettings();
 
         state.status = "connected";
         updateStatus(dom, true);
@@ -212,34 +239,4 @@ export async function unloadModel(dom) {
     dom.unloadModelBtn.disabled = false;
 }
 
-/**
- * Disable chat controls (no model loaded).
- * @param {Object} dom
- */
-export function disableChatControls(dom) {
-    dom.chatInput.disabled = true;
-    dom.sendBtn.disabled = true;
-    if (dom.streamingIndicator) dom.streamingIndicator.style.display = "none";
 
-    const prevSelectedModel = state.selectedModel;
-    state.selectedModel = null;
-    state.streaming = false;
-    saveSettings();
-
-    // Show existing chat in read-only mode when no model is loaded
-    if (state.chatMessages.length > 0) {
-        dom.emptyState.style.display = "none";
-        dom.chatHeader.style.display = "flex";
-        dom.chatMessages.style.display = "flex";
-        dom.chatMetrics.style.display = "flex";
-        if (prevSelectedModel) {
-            const model = state.models.find(m => m.key === prevSelectedModel);
-            dom.chatModelLabel.textContent = model?.display_name || prevSelectedModel;
-        }
-    } else {
-        dom.emptyState.style.display = "flex";
-        dom.chatHeader.style.display = "none";
-        dom.chatMessages.style.display = "none";
-        dom.chatMetrics.style.display = "none";
-    }
-}
