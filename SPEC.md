@@ -52,6 +52,20 @@ The interface must be modern and responsive, with striking design.
 - When displaying the list of available models, the UI should always show which (if any) models are currently loaded on the server.
 - UI `Connected` status should update automatically if the endpoint becomes unavailable at any point while connected.
 
+### Minimum Test Cases
+
+- Connect to a endpoint.
+- List models from the endpoint.
+- Select a model from a list of models and load it.
+- Select a loaded model and send a message. Verify that a response is sent and rendered in the window correctly. 
+- Verify that metrics are updated and render correctly in the UI.
+- Verify that a new chat creates a brand new chat, but saves the previous session in the history tab.
+- Unload a loaded model.
+- Change the system prompt and temperature and ensure that it is correctly sent to the endpoint.
+- Load a previous session from history and continue sending a message within that session. Verify that a response is received.
+- Verify that saved sessions can be deleted.
+- Toggle web search for the session so that the LLM can use the web search tool call.
+
 ## Reference
 
 Use these links if you require information about specific topics.
