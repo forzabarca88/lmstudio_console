@@ -8,3 +8,4 @@
 - Write the bare minimum of tests - follow **ARRANGE, ACT, ASSERT**. You must test the end result, NOT the implmentation details.
 - If you start the application (e.g. for testing), you must validate that the application is stopped before marking the task complete.
 - Use mocks for testing sparingly - if the code requires excessive mocking, then redesign the implementation to be easier to test.
+- **You must assume that your knowledge is outdated** - always research topics and frameworks before making decisions.

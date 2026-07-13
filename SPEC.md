@@ -68,12 +68,12 @@ The interface must be modern and responsive, with striking design.
 
 ## Reference
 
-Use these links if you require information about specific topics.
+Use these resources to research more information about specific topics.
 
 - https://lmstudio.ai/docs-md/developer/rest
 - https://lmstudio.ai/docs-md/developer/rest/streaming-events
 - https://lmstudio.ai/docs-md/developer/openai-compat
-- https://github.com/mermaid-js/mermaid
-- https://github.com/fastapi/fastapi
-- https://github.com/pydantic/pydantic-ai
+- https://github.com/mermaid-js/mermaid/blob/develop/README.md
+- https://github.com/fastapi/fastapi/blob/master/README.md
+- https://github.com/pydantic/pydantic-ai/blob/main/README.md
 - https://developers.openai.com/api/reference/resources/chat/index.md
