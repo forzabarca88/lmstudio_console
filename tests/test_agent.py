@@ -40,32 +40,36 @@ class TestMessageConversion(unittest.TestCase):
 
     def test_single_user_message(self):
         messages = [{"role": "user", "content": "Hello"}]
-        result = _openai_messages_to_pai_messages(messages)
-        self.assertEqual(len(result), 1)
-        self.assertIsInstance(result[0], ModelRequest)
-        self.assertIsInstance(result[0].parts[0], UserPromptPart)
+        pai_messages, system_prompts = _openai_messages_to_pai_messages(messages)
+        self.assertEqual(len(pai_messages), 1)
+        self.assertIsInstance(pai_messages[0], ModelRequest)
+        self.assertIsInstance(pai_messages[0].parts[0], UserPromptPart)
+        self.assertEqual(system_prompts, [])
 
     def test_system_and_user(self):
         messages = [
             {"role": "system", "content": "You are helpful"},
             {"role": "user", "content": "Hello"},
         ]
-        result = _openai_messages_to_pai_messages(messages)
-        self.assertEqual(len(result), 1)
-        self.assertIsInstance(result[0].parts[0], SystemPromptPart)
-        self.assertEqual(result[0].parts[0].content, "You are helpful")
-        self.assertIsInstance(result[0].parts[1], UserPromptPart)
+        pai_messages, system_prompts = _openai_messages_to_pai_messages(messages)
+        # System prompt is extracted separately, not included in ModelRequest parts
+        self.assertEqual(len(pai_messages), 1)
+        self.assertEqual(len(pai_messages[0].parts), 1)
+        self.assertIsInstance(pai_messages[0].parts[0], UserPromptPart)
+        # System prompt collected separately
+        self.assertEqual(system_prompts, ["You are helpful"])
 
     def test_user_assistant_conversation(self):
         messages = [
             {"role": "user", "content": "Hello"},
             {"role": "assistant", "content": "Hi there!"},
         ]
-        result = _openai_messages_to_pai_messages(messages)
-        self.assertEqual(len(result), 2)
-        self.assertIsInstance(result[0], ModelRequest)
-        self.assertIsInstance(result[1], ModelResponse)
-        self.assertEqual(result[1].parts[0].content, "Hi there!")
+        pai_messages, system_prompts = _openai_messages_to_pai_messages(messages)
+        self.assertEqual(len(pai_messages), 2)
+        self.assertIsInstance(pai_messages[0], ModelRequest)
+        self.assertIsInstance(pai_messages[1], ModelResponse)
+        self.assertEqual(pai_messages[1].parts[0].content, "Hi there!")
+        self.assertEqual(system_prompts, [])
 
     def test_tool_call_empty_content(self):
         """ARRANGE: Assistant with empty content + tool calls
@@ -78,11 +82,11 @@ class TestMessageConversion(unittest.TestCase):
             ]},
             {"role": "tool", "content": "Python is a programming language", "tool_call_id": "call_1"},
         ]
-        result = _openai_messages_to_pai_messages(messages)
-        self.assertEqual(len(result), 2)
-        self.assertIsInstance(result[0], ModelRequest)
-        self.assertIsInstance(result[1], ModelResponse)
-        parts = result[1].parts
+        pai_messages, system_prompts = _openai_messages_to_pai_messages(messages)
+        self.assertEqual(len(pai_messages), 2)
+        self.assertIsInstance(pai_messages[0], ModelRequest)
+        self.assertIsInstance(pai_messages[1], ModelResponse)
+        parts = pai_messages[1].parts
         # Empty content string is skipped; ToolCallPart comes first
         self.assertIsInstance(parts[0], ToolCallPart)
         self.assertEqual(parts[0].tool_call_id, "call_1")
@@ -90,6 +94,7 @@ class TestMessageConversion(unittest.TestCase):
         self.assertIsInstance(parts[1], ToolReturnPart)
         self.assertEqual(parts[1].tool_call_id, "call_1")
         self.assertEqual(parts[1].content, "Python is a programming language")
+        self.assertEqual(system_prompts, [])
 
     def test_tool_call_with_content(self):
         """ARRANGE: Assistant with content AND tool calls
@@ -102,14 +107,15 @@ class TestMessageConversion(unittest.TestCase):
             ]},
             {"role": "tool", "content": "Python results", "tool_call_id": "call_1"},
         ]
-        result = _openai_messages_to_pai_messages(messages)
-        self.assertEqual(len(result), 2)
-        parts = result[1].parts
+        pai_messages, system_prompts = _openai_messages_to_pai_messages(messages)
+        self.assertEqual(len(pai_messages), 2)
+        parts = pai_messages[1].parts
         self.assertIsInstance(parts[0], TextPart)
         self.assertEqual(parts[0].content, "Let me search for that.")
         self.assertIsInstance(parts[1], ToolCallPart)
         self.assertEqual(parts[1].tool_call_id, "call_1")
         self.assertIsInstance(parts[2], ToolReturnPart)
+        self.assertEqual(system_prompts, [])
 
     def test_multimodal_content(self):
         messages = [
@@ -121,13 +127,14 @@ class TestMessageConversion(unittest.TestCase):
                 ],
             }
         ]
-        result = _openai_messages_to_pai_messages(messages)
-        self.assertEqual(len(result), 1)
-        part = result[0].parts[0]
+        pai_messages, system_prompts = _openai_messages_to_pai_messages(messages)
+        self.assertEqual(len(pai_messages), 1)
+        part = pai_messages[0].parts[0]
         self.assertIsInstance(part, UserPromptPart)
         self.assertIsInstance(part.content[0], TextContent)
         self.assertEqual(part.content[0].content, "What is in this image?")
         self.assertIsInstance(part.content[1], ImageUrl)
+        self.assertEqual(system_prompts, [])
 
 
 class TestUserContentConversion(unittest.TestCase):

@@ -93,16 +93,26 @@ def _convert_user_content(content: Any) -> list[UserContent]:
     return [TextContent(content=str(content))]
 
 
-def _openai_messages_to_pai_messages(messages: list[dict]) -> list[ModelMessage]:
+def _openai_messages_to_pai_messages(
+    messages: list[dict],
+) -> tuple[list[ModelMessage], list[str]]:
     """Convert OpenAI-compatible messages to Pydantic AI ModelMessages.
 
     OpenAI messages have {role, content, ...} format.
     Pydantic AI uses ModelRequest (for user/system) and ModelResponse (for assistant/tool).
 
-    The conversion groups consecutive request messages (system/user) and
+    The conversion groups consecutive request messages (user) and
     response messages (assistant/tool) into proper ModelMessage objects.
+    System prompts are extracted and returned separately to avoid
+    duplicate system messages when combined with the system_prompt parameter.
+    This ensures the system message is always first, which is required
+    by some model chat templates (e.g. LM Studio Jinja2 templates).
+
+    Returns:
+        Tuple of (converted messages list, extracted system prompt texts).
     """
     pai_messages: list[ModelMessage] = []
+    system_prompts: list[str] = []
     request_parts = []
     response_parts = []
 
@@ -111,12 +121,15 @@ def _openai_messages_to_pai_messages(messages: list[dict]) -> list[ModelMessage]
         content = msg.get("content", "")
 
         if role == "system":
+            # Extract system prompts separately instead of including in request_parts.
+            # They will be merged with the system_prompt parameter in chat().
             if isinstance(content, str):
-                request_parts.append(SystemPromptPart(content=content))
+                if content:
+                    system_prompts.append(content)
             elif isinstance(content, list):
                 for part in content:
-                    if part.get("type") == "text":
-                        request_parts.append(SystemPromptPart(content=part["text"]))
+                    if part.get("type") == "text" and part.get("text"):
+                        system_prompts.append(part["text"])
             # Flush any pending response parts
             if response_parts:
                 pai_messages.append(ModelResponse(parts=response_parts))
@@ -171,7 +184,7 @@ def _openai_messages_to_pai_messages(messages: list[dict]) -> list[ModelMessage]
     if response_parts:
         pai_messages.append(ModelResponse(parts=response_parts))
 
-    return pai_messages
+    return pai_messages, system_prompts
 
 
 # --- Chat agent ---
@@ -224,8 +237,18 @@ class ChatAgent:
             f"messages={len(messages)}"
         )
 
-        # Convert messages to Pydantic AI format
-        pai_messages = _openai_messages_to_pai_messages(messages)
+        # Convert messages to Pydantic AI format.
+        # System prompts from the messages list are extracted separately to avoid
+        # duplicates when combined with the system_prompt parameter.
+        pai_messages, extracted_system_prompts = _openai_messages_to_pai_messages(messages)
+
+        # Merge system prompts: explicit parameter takes priority, append extracted ones.
+        combined_system = system_prompt.strip() if system_prompt.strip() else None
+        if extracted_system_prompts:
+            if combined_system:
+                combined_system += "\n\n" + "\n\n".join(extracted_system_prompts)
+            else:
+                combined_system = "\n\n".join(extracted_system_prompts)
 
         # Build model for this request
         model_obj = OpenAIChatModel(model, provider=self._provider)
@@ -241,11 +264,13 @@ class ChatAgent:
             toolsets=_tool_agent.toolsets if tool_call_enabled else None,
         )
 
-        # Prepend system prompt if provided
-        if system_prompt.strip():
+        # Prepend combined system prompt if any exists.
+        # This ensures the system message is always first in the message list,
+        # which is required by some model chat templates (e.g. LM Studio Jinja2).
+        if combined_system:
             pai_messages.insert(
                 0,
-                ModelRequest(parts=[SystemPromptPart(content=system_prompt.strip())]),
+                ModelRequest(parts=[SystemPromptPart(content=combined_system)]),
             )
 
         # Run agent with streaming
