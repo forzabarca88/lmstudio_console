@@ -42,7 +42,10 @@ The interface must be modern and responsive, with striking design.
 - A `Copy` button for each chat response which allows the user to copy the message to their clipboard.
 - Responses can render graphs using `Mermaid JS`.
 - Allo user to attach files, this is important for multimodal models supporting vision, audio, etc.
-- Add toggles to allow the user to use agentic functions such as tool calls - initially add a web search tool call so the LLM can search the web.
+- Add toggles to allow the user to use agentic functions such as tool calls
+- Required tools:
+    - `Web search` tool call so the LLM can search the web.
+    - `Open web page` tool call to get contents of specific pages.
 
 ### User Feedback 
 
@@ -51,6 +54,7 @@ The interface must be modern and responsive, with striking design.
 - Selecting a different model in the UI or loading/unloading a model should **NOT** clear or remove the existing chat messages. User should be able to continue the existing chat even if a new model is selected.
 - When displaying the list of available models, the UI should always show which (if any) models are currently loaded on the server.
 - UI `Connected` status should update automatically if the endpoint becomes unavailable at any point while connected.
+- When an LLM is thinking, show feedback on the UI. Also allow the thinking content to be expanded to show the thinking tokens streamed in realtime.
 
 ### Minimum Test Cases
 
@@ -79,3 +83,6 @@ Use these resources to research more information about specific topics.
 - https://github.com/fastapi/fastapi/blob/master/README.md
 - https://github.com/pydantic/pydantic-ai/blob/main/README.md
 - https://developers.openai.com/api/reference/resources/chat/index.md
+
+Use the following LIVE LM Studio/OpenAI compatible endpoint for validating testing assumptions:  
+```http://192.168.0.5:1234```
