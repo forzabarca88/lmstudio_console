@@ -56,12 +56,44 @@ globalThis.localStorage = {
 };
 
 globalThis.document = {
-    getElementById() { return { textContent: "", style: {}, classList: { add() {}, remove() {}, toggle() {} }, querySelector() { return null; }, appendChild() {}, remove() {} }; },
-    createElement() { return { textContent: "", innerHTML: "", style: {}, classList: { add() {}, remove() {}, toggle() {} }, value: "" }; },
+    getElementById() { return _createMockElement(); },
+    createElement(tag) {
+        const el = _createMockElement();
+        el.tagName = tag;
+        return el;
+    },
     body: { appendChild() {} },
 };
 
-globalThis.navigator = { clipboard: { writeText() { return Promise.resolve(); } } };
+function _createMockElement() {
+    let _textContent = "";
+    return {
+        get textContent() { return _textContent; },
+        set textContent(v) { _textContent = v; },
+        get innerHTML() {
+            // In real browsers, innerHTML returns HTML-escaped version of textContent
+            return _textContent
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;')
+                .replace(/'/g, '&#39;')
+                .replace(/"/g, '&quot;');
+        },
+        set innerHTML(v) { _textContent = v; },
+        style: {},
+        classList: { add() {}, remove() {}, toggle() {} },
+        value: "",
+        querySelector() { return null; },
+        appendChild() {},
+        remove() {},
+    };
+}
+
+Object.defineProperty(globalThis, 'navigator', {
+    value: { clipboard: { writeText() { return Promise.resolve(); } } },
+    writable: true,
+    configurable: true,
+});
 
 // Mock marked
 globalThis.marked = { parse: (text) => `<p>${text}</p>`, setOptions: () => {} };
@@ -70,7 +102,11 @@ globalThis.marked = { parse: (text) => `<p>${text}</p>`, setOptions: () => {} };
 globalThis.mermaid = { initialize: () => {}, render: async () => ({ svg: "<svg></svg>" }) };
 
 // Mock crypto
-globalThis.crypto = { randomUUID: () => "test-uuid-" + Date.now() };
+Object.defineProperty(globalThis, 'crypto', {
+    value: { randomUUID: () => "test-uuid-" + Date.now() },
+    writable: true,
+    configurable: true,
+});
 
 // ─── State tests ────────────────────────────────────────────────
 

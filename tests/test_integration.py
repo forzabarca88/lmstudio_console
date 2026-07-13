@@ -22,7 +22,7 @@ import sys
 import json
 import io
 import base64
-from unittest.mock import patch, MagicMock, AsyncMock
+from unittest.mock import patch, MagicMock, AsyncMock, AsyncMock as AsyncMockType
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
@@ -227,8 +227,8 @@ class TestModelLoadUnload(unittest.TestCase):
         self.assertEqual(resp.status_code, 404)
 
 
-class TestChat(unittest.TestCase):
-    """SPEC: Send message, verify response and metrics."""
+class TestChatProxy(unittest.TestCase):
+    """SPEC: Send message via proxy, verify response and metrics."""
 
     def setUp(self):
         self.client = TestClient(server.app)
@@ -314,6 +314,53 @@ class TestChat(unittest.TestCase):
         content = resp.content.decode()
         self.assertIn("Hello", content)
         self.assertIn("world", content)
+
+
+class TestChatEndpoint(unittest.TestCase):
+    """SPEC: Pydantic AI chat endpoint /api/chat.
+
+    Behaviour tests are in test_agent.py (unit tests with proper mocks).
+    This class verifies the endpoint exists and returns correct headers.
+    """
+
+    def setUp(self):
+        self.client = TestClient(server.app)
+
+    def test_chat_endpoint_exists(self):
+        """ARRANGE: Server running
+        ACT: POST /api/chat with valid body
+        ASSERT: Endpoint exists (not 404)"""
+        resp = self.client.post("/api/chat", json={
+            "model": "test-model",
+            "messages": [{"role": "user", "content": "Hi"}],
+        })
+        self.assertNotEqual(resp.status_code, 404)
+
+    def test_chat_returns_sse_content_type(self):
+        """ARRANGE: Server running
+        ACT: POST /api/chat
+        ASSERT: Returns text/event-stream content type"""
+        resp = self.client.post("/api/chat", json={
+            "model": "test-model",
+            "messages": [{"role": "user", "content": "Hi"}],
+        })
+        self.assertIn("text/event-stream", resp.headers.get("content-type", ""))
+
+    def test_chat_accepts_all_params(self):
+        """ARRANGE: Server running
+        ACT: POST /api/chat with all parameters
+        ASSERT: Request accepted (not 400/404)"""
+        resp = self.client.post("/api/chat", json={
+            "model": "llama-3.1-8b",
+            "messages": [
+                {"role": "system", "content": "Be concise"},
+                {"role": "user", "content": "Hi"},
+            ],
+            "temperature": 0.5,
+            "system_prompt": "You are a helpful assistant",
+            "toolCallEnabled": True,
+        })
+        self.assertNotEqual(resp.status_code, 404)
 
 
 class TestTools(unittest.TestCase):

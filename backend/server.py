@@ -1,16 +1,20 @@
 """FastAPI server that serves static files and proxies API calls to LM Studio."""
 
+from __future__ import annotations
+
+import json
 from contextlib import asynccontextmanager
 from typing import AsyncIterable, Optional
 
 import httpx
 import uvicorn
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, UploadFile
 from fastapi.responses import StreamingResponse, JSONResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from backend.config import get_host, get_port, get_lm_studio_url, get_static_dir
 from backend.proxy import proxy_request, proxy_stream_iter, close_client, trace_logger
+from backend.agent import ChatAgent
 from backend.tools import get_tool_schemas, execute_tool
 
 # Hop-by-hop headers that must not be forwarded from upstream responses.
@@ -146,6 +150,8 @@ async def serve_index_options():
     return JSONResponse(status_code=200, content={})
 
 
+# --- Model Management (proxied to LM Studio native API) ---
+
 @app.get("/proxy/{path:path}")
 async def proxy_get(request: Request, path: str):
     """Proxy GET requests to the backend API."""
@@ -212,7 +218,67 @@ async def _proxy_stream_response(
     )
 
 
-# --- Tool endpoints ---
+# --- Chat endpoint (Pydantic AI powered) ---
+
+@app.post("/api/chat")
+async def chat_endpoint(request: Request):
+    """Chat with Pydantic AI Agent.
+
+    Handles tool calls automatically on the backend.
+    Frontend receives clean text stream, no tool call handling needed.
+
+    Request body:
+        {
+            "model": str,
+            "messages": [{role, content}, ...],
+            "temperature": float,
+            "system_prompt": str (optional),
+            "toolCallEnabled": bool (optional, default false),
+        }
+
+    Response: SSE stream of text deltas.
+    """
+    body = await request.json()
+    target_url = _resolve_target_url(request)
+    api_token = request.headers.get("Authorization", "")
+    if api_token.startswith("Bearer "):
+        api_token = api_token[7:]
+
+    model = body.get("model", "")
+    messages = body.get("messages", [])
+    temperature = body.get("temperature", 0.7)
+    system_prompt = body.get("system_prompt", "")
+    tool_call_enabled = body.get("toolCallEnabled", False)
+
+    # Create agent for this request
+    agent = ChatAgent(base_url=target_url, api_key=api_token)
+
+    async def chat_generator() -> AsyncIterable[str]:
+        try:
+            async for payload in agent.chat(
+                model=model,
+                messages=messages,
+                temperature=temperature,
+                system_prompt=system_prompt,
+                tool_call_enabled=tool_call_enabled,
+            ):
+                yield f"data: {json.dumps(payload)}\n\n"
+        except Exception as e:
+            trace_logger.log_server_error("POST", "/api/chat", e)
+            yield f"data: {json.dumps({'__error__': str(e)})}\n\n"
+
+    return StreamingResponse(
+        chat_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+# --- Tool endpoints (kept for backward compatibility) ---
 
 @app.get("/api/tools")
 async def list_tools():
@@ -236,16 +302,16 @@ async def execute_tool_endpoint(request: Request):
         return JSONResponse(status_code=500, content={"error": str(e)})
 
 
+# --- File Upload ---
+
 @app.post("/api/upload")
 async def upload_file(request: Request):
     """Handle file uploads for multimodal chat.
 
     Accepts multipart form data with a 'file' field.
     Returns base64-encoded content and MIME type for the frontend
-to include in multimodal messages.
+    to include in multimodal messages.
     """
-    from fastapi import UploadFile
-
     form = await request.form()
     file = form.get("file")
     if not file:

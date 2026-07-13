@@ -7,10 +7,7 @@ from typing import AsyncIterable, Optional
 import httpx
 
 from backend.config import get_lm_studio_url
-from backend.logger import TraceLogger
-
-
-trace_logger = TraceLogger()
+from backend.logger import trace_logger
 
 # Shared client with connection pooling and reasonable timeouts.
 # Created lazily to avoid issues if config isn't loaded yet.

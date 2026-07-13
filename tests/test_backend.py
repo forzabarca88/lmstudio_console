@@ -6,6 +6,7 @@ Tests configuration, logging, and proxy functionality.
 import unittest
 import os
 import sys
+import unittest.mock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
@@ -47,9 +48,9 @@ class TestTraceLogger(unittest.TestCase):
     def setUp(self):
         self.logger = TraceLogger()
         self.trace = RequestTrace(
-            method="GET", path="/api/v1/models",
+            method="GET",
+            path="/api/v1/models",
             target_url="http://localhost:1234/api/v1/models",
-            start_time=1000.0,
         )
 
     def test_trace_fields(self):
@@ -57,48 +58,46 @@ class TestTraceLogger(unittest.TestCase):
         ACT: Check attributes
         ASSERT: All fields set correctly"""
         self.assertEqual(self.trace.method, "GET")
-        self.trace.end_time = 1500.0
-        self.trace.status_code = 200
-        self.assertEqual(self.trace.duration, 0.5)
+        self.assertEqual(self.trace.path, "/api/v1/models")
+        self.assertEqual(self.trace.target, "http://localhost:1234/api/v1/models")
+        self.assertEqual(self.trace.duration, 0.0)
+        self.assertIsNone(self.trace.status)
+        self.assertIsNone(self.trace.error)
 
     def test_status_text(self):
         """ARRANGE: RequestTrace with status codes
         ACT: Get status text
         ASSERT: Correct label"""
-        self.trace.status_code = 200
-        self.assertEqual(self.trace._status_text(), "OK")
-        self.trace.status_code = 404
-        self.assertEqual(self.trace._status_text(), "Not Found")
-        self.trace.status_code = 500
-        self.assertEqual(self.trace._status_text(), "Server Error")
+        self.assertEqual(self.trace._status_text(200), "OK")
+        self.assertEqual(self.trace._status_text(404), "Not Found")
+        self.assertEqual(self.trace._status_text(500), "Internal Server Error")
 
     def test_request_logged(self):
         """ARRANGE: TraceLogger created
-        ACT: Log request
+        ACT: Log request with method, path, target_url
         ASSERT: Debug log emitted"""
-        with unittest.mock.patch.object(self.logger._logger, 'debug') as mock_debug:
-            self.logger.log_request(self.trace)
-            mock_debug.assert_called_once()
+        with unittest.mock.patch.object(self.logger._log, 'debug') as mock_debug:
+            self.logger.log_request("GET", "/api/v1/models", "http://localhost:1234/api/v1/models")
+            mock_debug.assert_called()
 
     def test_response_logged(self):
-        """ARRANGE: TraceLogger created
+        """ARRANGE: TraceLogger created, trace has duration
         ACT: Log response
         ASSERT: Debug log emitted"""
-        self.trace.end_time = 1500.0
-        self.trace.status_code = 200
-        with unittest.mock.patch.object(self.logger._logger, 'debug') as mock_debug:
-            self.logger.log_response(self.trace)
-            mock_debug.assert_called_once()
+        self.trace.duration = 1.5
+        self.trace.status = 200
+        with unittest.mock.patch.object(self.logger._log, 'debug') as mock_debug:
+            self.logger.log_response(self.trace, 200, "application/json", 1.5)
+            mock_debug.assert_called()
 
     def test_error_logged(self):
         """ARRANGE: TraceLogger created
         ACT: Log error
         ASSERT: Error log emitted"""
-        self.trace.end_time = 1100.0
-        self.trace.error = "Connection refused"
-        with unittest.mock.patch.object(self.logger._logger, 'error') as mock_error:
-            self.logger.log_error(self.trace)
-            mock_error.assert_called_once()
+        self.trace.duration = 0.5
+        with unittest.mock.patch.object(self.logger._log, 'error') as mock_error:
+            self.logger.log_error(self.trace, ConnectionError("refused"), 0.5)
+            mock_error.assert_called()
 
 
 if __name__ == "__main__":

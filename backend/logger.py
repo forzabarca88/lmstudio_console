@@ -1,22 +1,32 @@
-"""Trace logging for proxy requests."""
+"""Trace logging for proxy requests.
+
+Configures a shared logger with a single handler.
+All modules should import `trace_logger` from this module.
+"""
 
 import logging
 import time
 from typing import Optional
 
+# Shared logger - configured once, reused everywhere
+logger = logging.getLogger("lmstudio_console")
+logger.setLevel(logging.DEBUG)
+logger.addHandler(logging.StreamHandler())
+logger.handlers[0].setFormatter(logging.Formatter(
+    "%(asctime)s [%(levelname)s] %(message)s",
+    datefmt="%H:%M:%S"
+))
+
 
 class TraceLogger:
-    """Logs detailed trace information for proxied API requests."""
+    """Logs detailed trace information for proxied API requests.
+
+    This is a facade that delegates to the shared module-level logger.
+    Do not instantiate multiple times - import `trace_logger` instead.
+    """
 
     def __init__(self):
-        self._log = logging.getLogger("lmstudio_console")
-        handler = logging.StreamHandler()
-        handler.setFormatter(logging.Formatter(
-            "%(asctime)s [%(levelname)s] %(message)s",
-            datefmt="%H:%M:%S"
-        ))
-        self._log.addHandler(handler)
-        self._log.setLevel(logging.DEBUG)
+        self._log = logger
 
     @property
     def logger(self):
@@ -56,6 +66,10 @@ class TraceLogger:
     def log_server_error(self, method: str, path: str, error: Exception) -> None:
         """Log a server-side error (e.g. response handling failure)."""
         self._log.error(f"ERR {method:6s} {path}: {self._error_msg(error)}")
+
+
+# Shared singleton instance
+trace_logger = TraceLogger()
 
 
 class RequestTrace:

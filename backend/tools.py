@@ -10,9 +10,7 @@ from collections.abc import Callable
 from pydantic_ai import Agent
 from pydantic_ai.tools import ToolDefinition
 
-from backend.logger import TraceLogger
-
-trace_logger = TraceLogger()
+from backend.logger import trace_logger
 
 # Agent holds tool definitions; model is set per-request by the caller.
 _agent = Agent()

@@ -1,10 +1,13 @@
 /**
  * Chat functionality: send messages, handle streaming responses, render messages,
- * track metrics, file attachments, and agentic tool calls.
+ * track metrics, file attachments.
+ *
+ * Tool calls are handled entirely by Pydantic AI on the backend.
+ * The frontend only sends chat requests and receives clean text streams.
  */
 
 import { state, saveSettings, saveCurrentSession, saveSessionHistory } from "./state.js";
-import { apiCallStream, apiCall } from "./api.js";
+import { apiCallChat, apiCall } from "./api.js";
 import { showToast, scrollToBottom, autoResizeInput, updateMetrics } from "./ui.js";
 import { renderHistoryList } from "./history.js";
 
@@ -90,7 +93,7 @@ export function renderAttachmentPreview(dom) {
 
         const remove = document.createElement("button");
         remove.className = "attachment-remove";
-        remove.textContent = "×";
+        remove.textContent = "\u00d7";
         remove.title = "Remove";
         remove.addEventListener("click", (e) => {
             e.stopPropagation();
@@ -125,28 +128,6 @@ async function uploadFile(file) {
 }
 
 /**
- * Execute a tool call through the backend.
- * @param {string} toolName - Name of the tool
- * @param {Object} toolArgs - Tool arguments
- * @returns {Promise<string>} Tool result
- */
-async function executeTool(toolName, toolArgs) {
-    const response = await fetch("/api/tool-exec", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name: toolName, arguments: toolArgs }),
-    });
-
-    if (!response.ok) {
-        const error = await response.text();
-        throw new Error(`Tool execution failed: ${error}`);
-    }
-
-    const data = await response.json();
-    return data.result;
-}
-
-/**
  * Build a multimodal content array from text and attachments.
  * @param {string} text - User's text message
  * @param {Array} attachments - File attachments
@@ -169,7 +150,7 @@ function buildMultimodalContent(text, attachments) {
                 // Non-image files: include as text with metadata
                 content.push({
                     type: "text",
-                    text: `[File: ${att.name} (${att.mimeType}, ${att.size} bytes)]\n${att.base64 ? "Content available" : ""}`,
+                    text: `[File: ${att.name} (${att.mimeType}, ${att.size} bytes)]`,
                 });
             }
         }
@@ -179,8 +160,8 @@ function buildMultimodalContent(text, attachments) {
 }
 
 /**
- * Send a message and receive a streaming response.
- * Handles file attachments and agentic tool calls.
+ * Send a message and receive a streaming response via Pydantic AI.
+ * The backend handles tool calls automatically.
  * @param {Object} dom - DOM element references.
  */
 export async function sendMessage(dom) {
@@ -190,6 +171,7 @@ export async function sendMessage(dom) {
     if (!text && !hasAttachments) return;
     if (state.streaming || !state.selectedModel) return;
 
+    // Atomic guard: set immediately and disable input to prevent race
     state.streaming = true;
     dom.chatInput.disabled = true;
     dom.sendBtn.disabled = true;
@@ -245,40 +227,27 @@ export async function sendMessage(dom) {
     }
     messages.push(...state.chatMessages);
 
-    // Add tool definitions if enabled
+    // Build chat request body
     const body = {
         model: state.selectedModel,
         messages: messages,
         temperature: state.temperature,
-        stream: true,
+        system_prompt: state.systemPrompt,
+        toolCallEnabled: state.toolCallEnabled,
     };
-
-    if (state.toolCallEnabled) {
-        try {
-            const tools = await apiCall("/api/tools");
-            if (tools && tools.length > 0) {
-                body.tools = tools;
-                body.tool_choice = "auto";
-            }
-        } catch (e) {
-            showToast(`Failed to load tool schemas: ${e.message}`, "error");
-        }
-    }
 
     // Clear attachments after sending
     clearAttachments(dom);
 
     try {
-        const response = await apiCallStream("/v1/chat/completions", "POST", body);
+        const response = await apiCallChat(body);
 
-        // Parse SSE stream
+        // Parse SSE stream from Pydantic AI backend
         const reader = response.body.getReader();
         const decoder = new TextDecoder();
         let buffer = "";
         let assistantContent = "";
         let streamDone = false;
-        let hasContent = false;
-        let toolCalls = [];
 
         while (!streamDone) {
             const { done, value } = await reader.read();
@@ -293,62 +262,44 @@ export async function sendMessage(dom) {
             for (const line of lines) {
                 if (line.startsWith("data: ")) {
                     const payload = line.slice(6).trim();
-                    if (payload === "[DONE]") {
-                        streamDone = true;
-                        break;
-                    }
+                    if (payload === "") continue;
+
                     try {
                         const parsed = JSON.parse(payload);
 
                         // Check for error events
-                        if (parsed.error) {
-                            throw new Error(parsed.error.message || "Unknown error");
-                        }
-                        if (parsed.message?.error) {
-                            throw new Error(parsed.message.error.message || parsed.message.message || "Unknown error");
+                        if (parsed.__error__) {
+                            throw new Error(parsed.__error__);
                         }
 
-                        const delta = parsed.choices?.[0]?.delta;
-
-                        // Handle tool calls
-                        if (delta?.tool_calls && state.toolCallEnabled) {
-                            for (const tc of delta.tool_calls) {
-                                const idx = tc.index;
-                                if (!toolCalls[idx]) {
-                                    toolCalls[idx] = { id: tc.id, type: "function", function: { name: tc.function?.name || "", arguments: "" } };
-                                }
-                                if (tc.function?.arguments) {
-                                    toolCalls[idx].function.arguments += tc.function.arguments;
-                                }
-                            }
-                        }
-
-                        if (delta?.content) {
-                            tokenCount++;
-                            assistantContent += delta.content;
-                            renderContent(contentEl, assistantContent);
-                            scrollToBottom(dom.chatMessages);
-
-                            if (!firstTokenTime) {
-                                firstTokenTime = (Date.now() - streamStart) / 1000;
-                            }
-
-                            if (!hasContent) {
-                                hasContent = true;
-                                const textEl = document.getElementById("streamingIndicatorText");
-                                if (textEl) textEl.textContent = "Generating...";
-                            }
-
-                            const elapsed = (Date.now() - streamStart) / 1000;
-                            metrics.tokensPerSecond = elapsed > 0 ? tokenCount / elapsed : 0;
-                            metrics.timeToFirstToken = firstTokenTime;
-                            metrics.totalTokens = tokenCount;
+                        // Check for usage info (final metadata)
+                        if (parsed.__usage__) {
+                            metrics.totalTokens = parsed.__usage__.total_tokens || tokenCount;
+                            metrics.completionTokens = parsed.__usage__.completion_tokens || 0;
+                            metrics.promptTokens = parsed.__usage__.prompt_tokens || 0;
                             updateMetrics(dom, metrics);
+                            continue;
                         }
 
-                        if (parsed.usage) {
-                            metrics.totalTokens = parsed.usage.total_tokens || tokenCount;
-                            updateMetrics(dom, metrics);
+                        // Text content delta
+                        if (parsed.content !== undefined) {
+                            const delta = parsed.content;
+                            if (typeof delta === "string" && delta.length > 0) {
+                                tokenCount++;
+                                assistantContent += delta;
+                                renderContent(contentEl, assistantContent);
+                                scrollToBottom(dom.chatMessages);
+
+                                if (!firstTokenTime) {
+                                    firstTokenTime = (Date.now() - streamStart) / 1000;
+                                }
+
+                                const elapsed = (Date.now() - streamStart) / 1000;
+                                metrics.tokensPerSecond = elapsed > 0 ? tokenCount / elapsed : 0;
+                                metrics.timeToFirstToken = firstTokenTime;
+                                metrics.totalTokens = tokenCount;
+                                updateMetrics(dom, metrics);
+                            }
                         }
                     } catch (e) {
                         if (e.message && !e.message.includes("Unexpected token")) {
@@ -376,144 +327,6 @@ export async function sendMessage(dom) {
         state.metrics = { ...metrics };
         renderContent(contentEl, assistantContent);
 
-        // Handle tool calls if present
-        if (toolCalls.length > 0 && state.toolCallEnabled) {
-            for (const tc of toolCalls) {
-                if (!tc) continue;
-
-                // Show tool call in chat
-                const toolEl = appendToolCall(dom, tc, "executing");
-
-                try {
-                    // Execute the tool
-                    const args = JSON.parse(tc.function.arguments || "{}");
-                    const result = await executeTool(tc.function.name, args);
-
-                    // Update tool call display
-                    updateToolCallResult(toolEl, result);
-
-                    // Add tool result to messages
-                    const toolMsg = {
-                        role: "tool",
-                        content: result,
-                        tool_call_id: tc.id,
-                    };
-                    state.chatMessages.push(toolMsg);
-
-                    // Send follow-up request to continue the conversation
-                    const followUpMessages = [];
-                    if (state.systemPrompt.trim()) {
-                        followUpMessages.push({ role: "system", content: state.systemPrompt });
-                    }
-                    followUpMessages.push(...state.chatMessages);
-
-                    const followUpBody = {
-                        model: state.selectedModel,
-                        messages: followUpMessages,
-                        temperature: state.temperature,
-                        stream: true,
-                    };
-                    if (state.toolCallEnabled) {
-                        const tools = await apiCall("/api/tools");
-                        if (tools && tools.length > 0) {
-                            followUpBody.tools = tools;
-                            followUpBody.tool_choice = "auto";
-                        }
-                    }
-
-                    // Create new assistant message for follow-up
-                    const followUpEl = appendMessage(dom, { role: "assistant", content: "" }, "assistant");
-                    const followUpContentEl = followUpEl.querySelector(".message-text");
-
-                    const followUpResponse = await apiCallStream("/v1/chat/completions", "POST", followUpBody);
-                    const followUpReader = followUpResponse.body.getReader();
-                    const followUpDecoder = new TextDecoder();
-                    let followUpBuffer = "";
-                    let followUpContent = "";
-                    let followUpDone = false;
-                    let followUpToolCalls = [];
-
-                    if (dom.streamingIndicator) {
-                        dom.streamingIndicator.style.display = "flex";
-                        const textEl = document.getElementById("streamingIndicatorText");
-                        if (textEl) textEl.textContent = "Continuing...";
-                    }
-
-                    while (!followUpDone) {
-                        const { done, value } = await followUpReader.read();
-                        if (done) break;
-
-                        followUpBuffer += followUpDecoder.decode(value, { stream: true });
-                        const followUpLines = followUpBuffer.split("\n");
-                        followUpBuffer = followUpLines.pop() || "";
-
-                        for (const fLine of followUpLines) {
-                            if (fLine.startsWith("data: ")) {
-                                const fPayload = fLine.slice(6).trim();
-                                if (fPayload === "[DONE]") {
-                                    followUpDone = true;
-                                    break;
-                                }
-                                try {
-                                    const fParsed = JSON.parse(fPayload);
-                                    if (fParsed.error) throw new Error(fParsed.error.message || "Unknown error");
-
-                                    const fDelta = fParsed.choices?.[0]?.delta;
-
-                                    if (fDelta?.tool_calls) {
-                                        for (const ftc of fDelta.tool_calls) {
-                                            const fIdx = ftc.index;
-                                            if (!followUpToolCalls[fIdx]) {
-                                                followUpToolCalls[fIdx] = { id: ftc.id, type: "function", function: { name: ftc.function?.name || "", arguments: "" } };
-                                            }
-                                            if (ftc.function?.arguments) {
-                                                followUpToolCalls[fIdx].function.arguments += ftc.function.arguments;
-                                            }
-                                        }
-                                    }
-
-                                    if (fDelta?.content) {
-                                        followUpContent += fDelta.content;
-                                        renderContent(followUpContentEl, followUpContent);
-                                        scrollToBottom(dom.chatMessages);
-                                    }
-
-                                    if (fParsed.usage) {
-                                        metrics.totalTokens = fParsed.usage.total_tokens || metrics.totalTokens;
-                                        updateMetrics(dom, metrics);
-                                    }
-                                } catch (fE) {
-                                    if (fE.message && !fE.message.includes("Unexpected token")) {
-                                        followUpDone = true;
-                                        throw fE;
-                                    }
-                                }
-                            }
-                        }
-                    }
-
-                    if (dom.streamingIndicator) dom.streamingIndicator.style.display = "none";
-
-                    const followUpMsg = { role: "assistant", content: followUpContent };
-                    state.chatMessages.push(followUpMsg);
-                    renderContent(followUpContentEl, followUpContent);
-
-                    // If there are more tool calls, continue the loop
-                    if (followUpToolCalls.length > 0) {
-                        // For simplicity, stop after one round of tool calls
-                        // to avoid infinite loops
-                    }
-                } catch (toolErr) {
-                    updateToolCallResult(toolEl, `Error: ${toolErr.message}`);
-                    state.chatMessages.push({
-                        role: "tool",
-                        content: `Error: ${toolErr.message}`,
-                        tool_call_id: tc.id,
-                    });
-                }
-            }
-        }
-
         // Save session to history
         saveCurrentSession();
         renderHistoryList(dom);
@@ -531,7 +344,7 @@ export async function sendMessage(dom) {
             <div class="message-avatar">AI</div>
             <div class="message-content">
                 <div class="message-role">Assistant</div>
-                <div class="error-message">Error: ${e.message}</div>
+                <div class="error-message">Error: ${escapeHtml(e.message)}</div>
             </div>
         `;
         dom.chatMessages.appendChild(errorEl);
@@ -545,55 +358,6 @@ export async function sendMessage(dom) {
     dom.sendBtn.disabled = false;
     if (dom.attachBtn) dom.attachBtn.disabled = !state.selectedModel;
     dom.chatInput.focus();
-}
-
-/**
- * Append a tool call message to the chat.
- * @param {Object} dom
- * @param {Object} toolCall - { id, type, function: { name, arguments } }
- * @param {string} status - "executing" | "done"
- * @returns {HTMLElement}
- */
-function appendToolCall(dom, toolCall, status) {
-    const el = document.createElement("div");
-    el.className = "tool-call";
-    el.dataset.toolId = toolCall.id;
-
-    const argsDisplay = toolCall.function.arguments || "{}";
-
-    el.innerHTML = `
-        <div class="message-avatar">🔧</div>
-        <div class="tool-call-content">
-            <div class="tool-call-header">
-                <span class="tool-call-name">Tool: ${toolCall.function.name}</span>
-                <span class="tool-call-status ${status}">${status === "executing" ? "Executing..." : "Done"}</span>
-            </div>
-            <div class="tool-call-args">${escapeHtml(argsDisplay)}</div>
-            <div class="tool-call-result" style="display:none;"></div>
-        </div>
-    `;
-
-    dom.chatMessages.appendChild(el);
-    scrollToBottom(dom.chatMessages);
-    return el;
-}
-
-/**
- * Update a tool call element with its result.
- * @param {HTMLElement} el - The tool call element
- * @param {string} result - Tool execution result
- */
-function updateToolCallResult(el, result) {
-    const statusEl = el.querySelector(".tool-call-status");
-    const resultEl = el.querySelector(".tool-call-result");
-
-    statusEl.className = "tool-call-status done";
-    statusEl.textContent = "Done";
-
-    resultEl.style.display = "block";
-    resultEl.textContent = result;
-
-    scrollToBottom(el.closest(".chat-messages") || document.getElementById("chatMessages"));
 }
 
 /**
