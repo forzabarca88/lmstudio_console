@@ -14,7 +14,7 @@ The interface must be modern and responsive, with striking design.
 
 - Use Python 3.12.
 - Use `FastAPI`.
-- Use `Pydantic AI`
+- Use `Pydantic AI`.
 - Use `uv` instead of Python calls.
 
 ### Frontend
