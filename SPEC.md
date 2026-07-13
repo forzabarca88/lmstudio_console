@@ -54,6 +54,8 @@ The interface must be modern and responsive, with striking design.
 
 ### Minimum Test Cases
 
+Assume that following refers to front-end (browser) and back-end (server) testing.  
+
 - Connect to a endpoint.
 - List models from the endpoint.
 - Select a model from a list of models and load it.
