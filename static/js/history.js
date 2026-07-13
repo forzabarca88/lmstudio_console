@@ -88,6 +88,7 @@ export function continueSession(dom, sessionId) {
     state.currentSessionId = session.id;
     state.selectedModel = session.model || state.selectedModel;
     state.metrics = { tokensPerSecond: 0, timeToFirstToken: null, totalTokens: 0 };
+    state.attachments = [];
 
     // Render messages
     dom.chatMessages.innerHTML = "";

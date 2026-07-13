@@ -11,6 +11,7 @@ from fastapi.staticfiles import StaticFiles
 
 from backend.config import get_host, get_port, get_lm_studio_url, get_static_dir
 from backend.proxy import proxy_request, proxy_stream_iter, close_client, trace_logger
+from backend.tools import get_tool_schemas, execute_tool
 
 # Hop-by-hop headers that must not be forwarded from upstream responses.
 # JSONResponse computes its own Content-Length; forwarding the upstream value
@@ -211,6 +212,63 @@ async def _proxy_stream_response(
     )
 
 
+# --- Tool endpoints ---
+
+@app.get("/api/tools")
+async def list_tools():
+    """Return available tool schemas in OpenAI-compatible format."""
+    return JSONResponse(content=get_tool_schemas())
+
+
+@app.post("/api/tool-exec")
+async def execute_tool_endpoint(request: Request):
+    """Execute a registered tool with the given arguments."""
+    body = await request.json()
+    name = body.get("name", "")
+    arguments = body.get("arguments", {})
+    try:
+        result = await execute_tool(name, arguments)
+        return JSONResponse(content={"result": result})
+    except ValueError as e:
+        return JSONResponse(status_code=400, content={"error": str(e)})
+    except Exception as e:
+        trace_logger.log_server_error("POST", "/api/tool-exec", e)
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
+
+@app.post("/api/upload")
+async def upload_file(request: Request):
+    """Handle file uploads for multimodal chat.
+
+    Accepts multipart form data with a 'file' field.
+    Returns base64-encoded content and MIME type for the frontend
+to include in multimodal messages.
+    """
+    from fastapi import UploadFile
+
+    form = await request.form()
+    file = form.get("file")
+    if not file:
+        return JSONResponse(status_code=400, content={"error": "No file provided"})
+
+    # Read and encode
+    content = await file.read()
+    import base64
+    b64 = base64.b64encode(content).decode("ascii")
+    mime_type = file.content_type or "application/octet-stream"
+
+    # Determine if it's an image
+    is_image = mime_type.startswith("image/")
+
+    return JSONResponse(content={
+        "filename": file.filename or "unnamed",
+        "mimeType": mime_type,
+        "size": len(content),
+        "base64": b64,
+        "isImage": is_image,
+    })
+
+
 # --- Static file serving ---
 app.mount("/static", StaticFiles(directory=get_static_dir()), name="static")
 
@@ -221,7 +279,7 @@ app.add_middleware(
     allow_origins=["*"],
     allow_methods=["GET", "POST", "OPTIONS"],
     allow_headers=["Content-Type", "Authorization", _HEADER_LM_STUDIO_URL],
-    expose_headers=["Content-Type"],
+    expose_headers=["Content-Type", "X-Accel-Buffering"],
 )
 
 

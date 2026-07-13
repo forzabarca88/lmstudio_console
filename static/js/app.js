@@ -5,7 +5,7 @@
 import { state, saveSettings, loadSettings, saveSessionHistory } from "./state.js";
 import { connect, disconnect } from "./connection.js";
 import { refreshModels, loadModel, unloadModel } from "./models.js";
-import { sendMessage, newChat } from "./chat.js";
+import { sendMessage, newChat, clearAttachments, renderAttachmentPreview } from "./chat.js";
 import { renderHistoryList, continueSession, deleteSession } from "./history.js";
 import { showToast, autoResizeInput, updateMetrics } from "./ui.js";
 
@@ -25,6 +25,7 @@ const dom = {
     systemPrompt: document.getElementById("systemPrompt"),
     temperature: document.getElementById("temperature"),
     temperatureValue: document.getElementById("temperatureValue"),
+    toolCallToggle: document.getElementById("toolCallToggle"),
     historyToggle: document.getElementById("historyToggle"),
     historyPanel: document.getElementById("historyPanel"),
     historyList: document.getElementById("historyList"),
@@ -42,6 +43,10 @@ const dom = {
     newChatBtn: document.getElementById("newChatBtn"),
     chatInput: document.getElementById("chatInput"),
     sendBtn: document.getElementById("sendBtn"),
+    attachBtn: document.getElementById("attachBtn"),
+    fileInput: document.getElementById("fileInput"),
+    attachmentPreview: document.getElementById("attachmentPreview"),
+    attachmentList: document.getElementById("attachmentList"),
     toastContainer: document.getElementById("toastContainer"),
     sidebar: document.getElementById("sidebar"),
     sidebarToggle: document.getElementById("sidebarToggle"),
@@ -99,6 +104,25 @@ dom.temperature.addEventListener("input", () => {
     saveSettings();
 });
 
+// Tool call toggle
+dom.toolCallToggle.addEventListener("change", () => {
+    state.toolCallEnabled = dom.toolCallToggle.checked;
+    saveSettings();
+    showToast(state.toolCallEnabled ? "Tool calls enabled" : "Tool calls disabled", "info");
+});
+
+// File attachment
+dom.attachBtn.addEventListener("click", () => {
+    dom.fileInput.click();
+});
+
+dom.fileInput.addEventListener("change", (e) => {
+    const files = Array.from(e.target.files);
+    if (files.length === 0) return;
+    files.forEach(f => addAttachment(f, dom));
+    e.target.value = "";
+});
+
 // Chat input
 dom.chatInput.addEventListener("keydown", (e) => {
     if (e.key === "Enter" && !e.shiftKey) {
@@ -111,6 +135,42 @@ dom.chatInput.addEventListener("input", () => autoResizeInput(dom.chatInput));
 
 dom.sendBtn.addEventListener("click", () => sendMessage(dom));
 dom.newChatBtn.addEventListener("click", () => newChat(dom));
+
+// Attachment helpers
+function addAttachment(file, dom) {
+    const maxSize = 50 * 1024 * 1024; // 50MB
+    if (file.size > maxSize) {
+        showToast(`File too large: ${file.name} (${(file.size / 1024 / 1024).toFixed(1)}MB)`, "error");
+        return;
+    }
+
+    const attachment = {
+        name: file.name,
+        type: file.type,
+        size: file.size,
+        file: file,
+    };
+
+    // For images, create preview
+    if (file.type.startsWith("image/")) {
+        const reader = new FileReader();
+        reader.onload = () => {
+            attachment.preview = reader.result;
+            renderAttachmentPreview(dom);
+        };
+        reader.readAsDataURL(file);
+    }
+
+    state.attachments.push(attachment);
+    if (!attachment.preview) {
+        renderAttachmentPreview(dom);
+    }
+}
+
+window.removeAttachment = function(index) {
+    state.attachments.splice(index, 1);
+    renderAttachmentPreview(dom);
+};
 
 // Mobile sidebar toggle
 dom.sidebarToggle.addEventListener("click", () => {

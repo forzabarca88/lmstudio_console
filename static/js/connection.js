@@ -110,6 +110,7 @@ export function disconnect(dom) {
 
     dom.chatInput.disabled = true;
     dom.sendBtn.disabled = true;
+    if (dom.attachBtn) dom.attachBtn.disabled = true;
     showToast("Disconnected", "info");
 }
 
@@ -143,6 +144,7 @@ export function enableChatControls(dom) {
 
     dom.chatInput.disabled = !hasLoadedModel;
     dom.sendBtn.disabled = !hasLoadedModel;
+    if (dom.attachBtn) dom.attachBtn.disabled = !hasLoadedModel;
 
     const hasChatMessages = state.chatMessages.length > 0;
 

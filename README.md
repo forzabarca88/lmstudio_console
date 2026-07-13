@@ -17,6 +17,9 @@ Remote web management dashboard and chat interface for LM Studio.
 - **Settings**: Configurable system prompt and temperature
 - **Persistence**: Settings saved to localStorage between sessions
 - **Trace Logging**: Detailed request/response logging on the server console
+- **File Attachments**: Upload images, audio, documents for multimodal models
+- **Agentic Tools**: Toggle tool calls (e.g. web search) for LLM-agentic behavior
+- **Pydantic AI**: Backend tool definitions and execution powered by Pydantic AI
 
 ## Requirements
 
@@ -51,14 +54,15 @@ Open `http://localhost:8080` in your browser.
 │   ├── config.py      # Configuration from environment variables
 │   ├── logger.py      # Trace logging for proxy requests
 │   ├── proxy.py       # HTTP proxy service (httpx)
-│   └── server.py      # FastAPI application
+│   ├── server.py      # FastAPI application + tool/upload endpoints
+│   └── tools.py       # Pydantic AI tool definitions (web search)
 ├── static/
 │   ├── css/
 │   │   └── style.css  # Styles
 │   ├── js/
 │   │   ├── api.js     # API call utilities
 │   │   ├── app.js     # Main entry point
-│   │   ├── chat.js    # Chat functionality + metrics + mermaid
+│   │   ├── chat.js    # Chat + metrics + mermaid + attachments + tool calls
 │   │   ├── connection.js  # Connection management + heartbeat
 │   │   ├── history.js # Chat session history
 │   │   ├── models.js  # Model management
@@ -66,9 +70,10 @@ Open `http://localhost:8080` in your browser.
 │   │   └── ui.js      # UI utilities + metrics display
 │   └── index.html     # Page structure
 ├── tests/
-│   ├── test_config.py
-│   ├── test_logger.py
-│   └── test_server.py
+│   ├── test_backend.py
+│   ├── test_frontend.py
+│   ├── test_integration.py
+│   └── test_tools.py
 ├── run.py             # Entry point
 ├── pyproject.toml
 └── README.md

@@ -192,6 +192,7 @@ export async function unloadModel(dom) {
     // Disable input but preserve chat messages
     dom.chatInput.disabled = true;
     dom.sendBtn.disabled = true;
+    if (dom.attachBtn) dom.attachBtn.disabled = true;
     if (dom.streamingIndicator) dom.streamingIndicator.style.display = "none";
 
     // Show existing chat in read-only mode

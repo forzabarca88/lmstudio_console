@@ -28,6 +28,10 @@ export const state = {
     currentSessionId: null,
     // Heartbeat
     heartbeatInterval: null,
+    // Agentic tools
+    toolCallEnabled: false,
+    // File attachments for multimodal messages
+    attachments: [],
 };
 
 /**
@@ -40,6 +44,7 @@ export function saveSettings() {
         systemPrompt: state.systemPrompt,
         temperature: state.temperature,
         selectedModel: state.selectedModel,
+        toolCallEnabled: state.toolCallEnabled,
     };
     localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings));
 }
@@ -49,12 +54,25 @@ export function saveSettings() {
  */
 export function saveCurrentSession() {
     if (state.chatMessages.length === 0) return;
+
+    // Extract text preview from potentially multimodal content
+    let preview = "Chat session";
+    const firstMsg = state.chatMessages[0];
+    if (typeof firstMsg?.content === "string") {
+        preview = firstMsg.content.substring(0, 80);
+    } else if (Array.isArray(firstMsg?.content)) {
+        const textParts = firstMsg.content.filter(c => c.type === "text").map(c => c.text);
+        if (textParts.length > 0) {
+            preview = textParts.join(" ").substring(0, 80);
+        }
+    }
+
     const session = {
         id: state.currentSessionId || crypto.randomUUID(),
         createdAt: new Date().toISOString(),
         model: state.selectedModel || null,
         messages: [...state.chatMessages],
-        preview: state.chatMessages[0]?.content?.substring(0, 80) || "Chat session",
+        preview,
     };
     // Remove existing session with same id (if continuing)
     state.sessionHistory = state.sessionHistory.filter(s => s.id !== session.id);
@@ -114,6 +132,12 @@ export function loadSettings(dom) {
             }
             if (saved.selectedModel) {
                 state.selectedModel = saved.selectedModel;
+            }
+            if (saved.toolCallEnabled !== undefined) {
+                state.toolCallEnabled = saved.toolCallEnabled;
+                if (dom.toolCallToggle) {
+                    dom.toolCallToggle.checked = saved.toolCallEnabled;
+                }
             }
         }
     } catch (e) {

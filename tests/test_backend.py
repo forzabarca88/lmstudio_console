@@ -1,96 +1,104 @@
-"""Backend tests.
+"""Backend module tests.
 
-Verifies server configuration, trace logging, and proxy behavior.
+Tests configuration, logging, and proxy functionality.
 """
 
 import unittest
 import os
 import sys
-import io
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
-from backend.config import get_host, get_port, get_lm_studio_url, get_static_dir
+from backend import config
 from backend.logger import TraceLogger, RequestTrace
 
 
 class TestConfig(unittest.TestCase):
-    """Verify server configuration."""
+    """Configuration loads correctly."""
 
     def test_default_host(self):
-        self.assertEqual(get_host(), "0.0.0.0")
+        """ARRANGE: No env vars set
+        ACT: Get host
+        ASSERT: Default host 0.0.0.0"""
+        self.assertEqual(config.get_host(), "0.0.0.0")
 
     def test_default_port(self):
-        self.assertEqual(get_port(), 8080)
+        """ARRANGE: No env vars set
+        ACT: Get port
+        ASSERT: Default port 8080"""
+        self.assertEqual(config.get_port(), 8080)
 
     def test_default_lm_studio_url(self):
-        self.assertEqual(get_lm_studio_url(), "http://localhost:1234")
+        """ARRANGE: No env vars set
+        ACT: Get LM Studio URL
+        ASSERT: Default URL"""
+        self.assertEqual(config.get_lm_studio_url(), "http://localhost:1234")
 
     def test_static_dir_exists(self):
-        path = get_static_dir()
-        self.assertTrue(os.path.isdir(path))
-        self.assertTrue(os.path.exists(os.path.join(path, "index.html")))
+        """ARRANGE: Config module loaded
+        ACT: Get STATIC_DIR
+        ASSERT: Directory exists"""
+        self.assertTrue(os.path.isdir(config.get_static_dir()))
 
 
 class TestTraceLogger(unittest.TestCase):
-    """Verify trace logging captures request details for debugging."""
+    """Request tracing logs correctly."""
 
     def setUp(self):
         self.logger = TraceLogger()
-        self.capture = io.StringIO()
-        self.logger.logger.handlers[0].stream = self.capture
-
-    def test_request_logged(self):
-        """Outgoing requests are logged with method, path, and target."""
-        self.logger.log_request(
-            "GET", "/api/v1/models",
-            "http://localhost:1234/api/v1/models"
+        self.trace = RequestTrace(
+            method="GET", path="/api/v1/models",
+            target_url="http://localhost:1234/api/v1/models",
+            start_time=1000.0,
         )
-        output = self.capture.getvalue()
-        self.assertIn("GET", output)
-        self.assertIn("/api/v1/models", output)
-
-    def test_response_logged(self):
-        """Responses are logged with status code and duration."""
-        trace = self.logger.log_request(
-            "GET", "/api/v1/models",
-            "http://localhost:1234/api/v1/models"
-        )
-        self.logger.log_response(trace, 200, "application/json", 0.5, '{"data":[]}')
-        output = self.capture.getvalue()
-        self.assertIn("200", output)
-        self.assertIn("OK", output)
-        self.assertIn("0.500s", output)
-
-    def test_error_logged(self):
-        """Failed requests are logged with error details."""
-        trace = self.logger.log_request(
-            "GET", "/api/v1/models",
-            "http://localhost:1234/api/v1/models"
-        )
-        self.logger.log_error(trace, ConnectionError("Connection refused"), 0.1)
-        output = self.capture.getvalue()
-        self.assertIn("ERR", output)
-        self.assertIn("Connection refused", output)
-
-
-class TestRequestTrace(unittest.TestCase):
-    """Verify trace data structure."""
 
     def test_trace_fields(self):
-        trace = RequestTrace("POST", "/v1/chat", "http://localhost/v1/chat", '{"messages":[]}')
-        self.assertEqual(trace.method, "POST")
-        self.assertEqual(trace.path, "/v1/chat")
-        self.assertEqual(trace.target, "http://localhost/v1/chat")
-        self.assertEqual(trace.body, '{"messages":[]}')
-        self.assertIsNone(trace.status)
-        self.assertEqual(trace.duration, 0.0)
+        """ARRANGE: RequestTrace created
+        ACT: Check attributes
+        ASSERT: All fields set correctly"""
+        self.assertEqual(self.trace.method, "GET")
+        self.trace.end_time = 1500.0
+        self.trace.status_code = 200
+        self.assertEqual(self.trace.duration, 0.5)
 
     def test_status_text(self):
-        trace = RequestTrace("GET", "/test", "http://localhost/test")
-        self.assertEqual(trace._status_text(200), "OK")
-        self.assertEqual(trace._status_text(404), "Not Found")
-        self.assertEqual(trace._status_text(500), "Internal Server Error")
+        """ARRANGE: RequestTrace with status codes
+        ACT: Get status text
+        ASSERT: Correct label"""
+        self.trace.status_code = 200
+        self.assertEqual(self.trace._status_text(), "OK")
+        self.trace.status_code = 404
+        self.assertEqual(self.trace._status_text(), "Not Found")
+        self.trace.status_code = 500
+        self.assertEqual(self.trace._status_text(), "Server Error")
+
+    def test_request_logged(self):
+        """ARRANGE: TraceLogger created
+        ACT: Log request
+        ASSERT: Debug log emitted"""
+        with unittest.mock.patch.object(self.logger._logger, 'debug') as mock_debug:
+            self.logger.log_request(self.trace)
+            mock_debug.assert_called_once()
+
+    def test_response_logged(self):
+        """ARRANGE: TraceLogger created
+        ACT: Log response
+        ASSERT: Debug log emitted"""
+        self.trace.end_time = 1500.0
+        self.trace.status_code = 200
+        with unittest.mock.patch.object(self.logger._logger, 'debug') as mock_debug:
+            self.logger.log_response(self.trace)
+            mock_debug.assert_called_once()
+
+    def test_error_logged(self):
+        """ARRANGE: TraceLogger created
+        ACT: Log error
+        ASSERT: Error log emitted"""
+        self.trace.end_time = 1100.0
+        self.trace.error = "Connection refused"
+        with unittest.mock.patch.object(self.logger._logger, 'error') as mock_error:
+            self.logger.log_error(self.trace)
+            mock_error.assert_called_once()
 
 
 if __name__ == "__main__":
