@@ -40,6 +40,70 @@ async def web_search(query: str) -> str:
         return f"Search failed: {e}"
 
 
+# --- HTML-to-text extraction ---
+
+_MAX_PAGE_SIZE = 50_000  # 50KB limit
+_FETCH_TIMEOUT = 30  # seconds
+
+
+def _html_to_text(html: str) -> str:
+    """Extract readable text from HTML using stdlib HTMLParser."""
+    from html.parser import HTMLParser
+
+    class _TextExtractor(HTMLParser):
+        def __init__(self):
+            super().__init__()
+            self._text = []
+            self._skip = 0
+
+        def handle_starttag(self, tag, attrs):
+            if tag in ("script", "style", "noscript"):
+                self._skip += 1
+
+        def handle_endtag(self, tag):
+            if tag in ("script", "style", "noscript") and self._skip > 0:
+                self._skip -= 1
+
+        def handle_data(self, data):
+            if self._skip == 0 and data.strip():
+                self._text.append(data.strip())
+
+        def get_text(self):
+            return "\n".join(t for t in self._text if t)
+
+    extractor = _TextExtractor()
+    extractor.feed(html)
+    return extractor.get_text()
+
+
+@_agent.tool_plain
+async def open_web_page(url: str) -> str:
+    """Fetch and extract readable text content from a web page URL."""
+    import httpx
+
+    log = trace_logger.logger
+    log.debug(f"OPEN_WEB_PAGE url={url!r}")
+
+    try:
+        async with httpx.AsyncClient(timeout=_FETCH_TIMEOUT) as client:
+            response = await client.get(url)
+            response.raise_for_status()
+
+            raw = response.text
+            if len(raw) > _MAX_PAGE_SIZE:
+                raw = raw[:_MAX_PAGE_SIZE]
+
+            text = _html_to_text(raw)
+            log.debug(f"OPEN_WEB_PAGE extracted {len(text)} chars")
+            return text if text else "(page contained no readable text)"
+    except httpx.TimeoutException:
+        log.error(f"OPEN_WEB_PAGE timeout: {url}")
+        return f"Error: Request timed out after {_FETCH_TIMEOUT}s"
+    except Exception as e:
+        log.error(f"OPEN_WEB_PAGE error: {e}")
+        return f"Error fetching page: {e}"
+
+
 # --- Public API ---
 
 

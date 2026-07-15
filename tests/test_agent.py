@@ -29,6 +29,8 @@ from pydantic_ai.messages import (
     SystemPromptPart,
     TextPart,
     TextContent,
+    ThinkingPart,
+    ThinkingPartDelta,
     ImageUrl,
     ToolCallPart,
     ToolReturnPart,
@@ -160,10 +162,12 @@ class TestUserContentConversion(unittest.TestCase):
 
 
 class TestChatAgentStreaming(unittest.TestCase):
-    """ChatAgent streams text deltas and usage metadata correctly.
+    """ChatAgent streams text deltas, thinking tokens, and usage metadata correctly.
 
     Tests the observable output of agent.chat():
     - Text deltas are yielded as {"content": "..."} objects
+    - Thinking deltas are yielded as {"thinking": "..."} objects
+    - Thinking done marker is yielded as {"thinking_done": True}
     - Usage metadata is yielded as {"__usage__": {...}} object
     - Errors are surfaced as {"__error__": "..."} in stream
     """
@@ -171,9 +175,9 @@ class TestChatAgentStreaming(unittest.TestCase):
     def test_streams_text_and_usage(self):
         """ARRANGE: ChatAgent with mocked Pydantic AI agent
         ACT: Run chat
-        ASSERT: Yields content objects followed by usage metadata
+        ASSERT: Yields thinking_done, content objects, then usage metadata
 
-        Pydantic AI's stream_text(delta=True) yields incremental deltas."""
+        Pydantic AI's stream_response() yields ModelResponse objects with parts."""
         agent = ChatAgent("http://localhost:1234")
 
         async def _run():
@@ -186,12 +190,12 @@ class TestChatAgentStreaming(unittest.TestCase):
                     input_tokens=12, output_tokens=3, total_tokens=15
                 )
 
-                # stream_text(delta=True) yields deltas directly
-                async def mock_stream_iter(delta=False, debounce_by=0.05):
-                    yield "Hello"
-                    yield "!"
+                # stream_response() yields ModelResponse objects with parts
+                async def mock_stream_iter(debounce_by=0.05):
+                    yield ModelResponse(parts=[TextPart(content="Hello")])
+                    yield ModelResponse(parts=[TextPart(content="!")])
 
-                mock_result.stream_text = mock_stream_iter
+                mock_result.stream_response = mock_stream_iter
                 mock_cm = MagicMock()
                 mock_cm.__aenter__ = AsyncMock(return_value=mock_result)
                 mock_cm.__aexit__ = AsyncMock(return_value=False)
@@ -205,13 +209,15 @@ class TestChatAgentStreaming(unittest.TestCase):
                 ):
                     collected.append(text)
 
-            # Text deltas wrapped as {"content": "..."}
+            # Text content first
             self.assertEqual(collected[0], {"content": "Hello"})
             self.assertEqual(collected[1], {"content": "!"})
+            # thinking_done marker (model didn't produce thinking)
+            self.assertEqual(collected[2], {"thinking_done": True})
             # Usage metadata
-            self.assertEqual(collected[2]["__usage__"]["prompt_tokens"], 12)
-            self.assertEqual(collected[2]["__usage__"]["completion_tokens"], 3)
-            self.assertEqual(collected[2]["__usage__"]["total_tokens"], 15)
+            self.assertEqual(collected[3]["__usage__"]["prompt_tokens"], 12)
+            self.assertEqual(collected[3]["__usage__"]["completion_tokens"], 3)
+            self.assertEqual(collected[3]["__usage__"]["total_tokens"], 15)
 
         asyncio.run(_run())
 
@@ -261,10 +267,10 @@ class TestChatAgentStreaming(unittest.TestCase):
                     input_tokens=10, output_tokens=5, total_tokens=15
                 )
 
-                async def mock_stream_iter(delta=False, debounce_by=0.05):
-                    yield "Response"
+                async def mock_stream_iter(debounce_by=0.05):
+                    yield ModelResponse(parts=[TextPart(content="Response")])
 
-                mock_result.stream_text = mock_stream_iter
+                mock_result.stream_response = mock_stream_iter
                 mock_cm = MagicMock()
                 mock_cm.__aenter__ = AsyncMock(return_value=mock_result)
                 mock_cm.__aexit__ = AsyncMock(return_value=False)
@@ -297,10 +303,10 @@ class TestChatAgentStreaming(unittest.TestCase):
                     input_tokens=10, output_tokens=5, total_tokens=15
                 )
 
-                async def mock_stream_iter(delta=False, debounce_by=0.05):
-                    yield "Response"
+                async def mock_stream_iter(debounce_by=0.05):
+                    yield ModelResponse(parts=[TextPart(content="Response")])
 
-                mock_result.stream_text = mock_stream_iter
+                mock_result.stream_response = mock_stream_iter
                 mock_cm = MagicMock()
                 mock_cm.__aenter__ = AsyncMock(return_value=mock_result)
                 mock_cm.__aexit__ = AsyncMock(return_value=False)
@@ -316,6 +322,101 @@ class TestChatAgentStreaming(unittest.TestCase):
 
             call_kwargs = mock_cls.call_args.kwargs
             self.assertIsNone(call_kwargs.get("toolsets"))
+
+        asyncio.run(_run())
+
+    def test_streams_thinking_tokens(self):
+        """ARRANGE: ChatAgent with model producing thinking tokens
+        ACT: Run chat
+        ASSERT: Yields thinking deltas, thinking_done marker, then content"""
+        agent = ChatAgent("http://localhost:1234")
+
+        async def _run():
+            collected = []
+
+            with patch("backend.agent.Agent") as mock_cls:
+                mock_agent = MagicMock()
+                mock_result = MagicMock()
+                mock_result.usage = MagicMock(
+                    input_tokens=10, output_tokens=5, total_tokens=15
+                )
+
+                async def mock_stream_iter(debounce_by=0.05):
+                    # Thinking deltas
+                    yield ModelResponse(parts=[ThinkingPartDelta(content_delta="Let me think")])
+                    yield ModelResponse(parts=[ThinkingPartDelta(content_delta=" about this")])
+                    # Thinking complete
+                    yield ModelResponse(parts=[ThinkingPart(content="Let me think about this")])
+                    # Regular text response
+                    yield ModelResponse(parts=[TextPart(content="The answer is 42.")])
+
+                mock_result.stream_response = mock_stream_iter
+                mock_cm = MagicMock()
+                mock_cm.__aenter__ = AsyncMock(return_value=mock_result)
+                mock_cm.__aexit__ = AsyncMock(return_value=False)
+                mock_agent.run_stream = MagicMock(return_value=mock_cm)
+                mock_cls.return_value = mock_agent
+
+                async for text in agent.chat(
+                    model="test-model",
+                    messages=[{"role": "user", "content": "What is 6*7?"}],
+                    tool_call_enabled=False,
+                ):
+                    collected.append(text)
+
+            # Verify thinking deltas, thinking_done, content, and usage
+            thinking_deltas = [c for c in collected if "thinking" in c and "thinking_done" not in c]
+            thinking_done = [c for c in collected if c.get("thinking_done")]
+            contents = [c for c in collected if "content" in c]
+            usage = [c for c in collected if "__usage__" in c]
+
+            self.assertEqual(len(thinking_deltas), 2)
+            self.assertEqual(thinking_deltas[0]["thinking"], "Let me think")
+            self.assertEqual(thinking_deltas[1]["thinking"], " about this")
+            self.assertEqual(len(thinking_done), 1)
+            self.assertEqual(thinking_done[0]["thinking_done"], True)
+            self.assertEqual(len(contents), 1)
+            self.assertEqual(contents[0]["content"], "The answer is 42.")
+            self.assertEqual(len(usage), 1)
+
+        asyncio.run(_run())
+
+    def test_thinking_done_without_thinking(self):
+        """ARRANGE: ChatAgent with model that doesn't produce thinking
+        ACT: Run chat
+        ASSERT: Content emitted first, thinking_done after (model has no thinking support)"""
+        agent = ChatAgent("http://localhost:1234")
+
+        async def _run():
+            collected = []
+
+            with patch("backend.agent.Agent") as mock_cls:
+                mock_agent = MagicMock()
+                mock_result = MagicMock()
+                mock_result.usage = MagicMock(
+                    input_tokens=5, output_tokens=3, total_tokens=8
+                )
+
+                async def mock_stream_iter(debounce_by=0.05):
+                    yield ModelResponse(parts=[TextPart(content="Hi there!")])
+
+                mock_result.stream_response = mock_stream_iter
+                mock_cm = MagicMock()
+                mock_cm.__aenter__ = AsyncMock(return_value=mock_result)
+                mock_cm.__aexit__ = AsyncMock(return_value=False)
+                mock_agent.run_stream = MagicMock(return_value=mock_cm)
+                mock_cls.return_value = mock_agent
+
+                async for text in agent.chat(
+                    model="test-model",
+                    messages=[{"role": "user", "content": "Hi"}],
+                    tool_call_enabled=False,
+                ):
+                    collected.append(text)
+
+            # Content first, then thinking_done (model didn't produce thinking)
+            self.assertEqual(collected[0], {"content": "Hi there!"})
+            self.assertEqual(collected[1], {"thinking_done": True})
 
         asyncio.run(_run())
 

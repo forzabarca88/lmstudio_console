@@ -1327,6 +1327,74 @@ input[type="range"] {
 }
 
 /* ═══════════════════════════════════════════
+   THINKING BLOCK DISPLAY
+   ═══════════════════════════════════════════ */
+.thinking-block {
+    display: flex;
+    gap: 14px;
+    max-width: 100%;
+    animation: fadeIn 0.2s ease-out;
+    margin-bottom: 12px;
+}
+
+.thinking-block .message-avatar {
+    background: rgba(249, 115, 22, 0.12);
+    color: var(--coral);
+    border: 1px solid rgba(249, 115, 22, 0.3);
+}
+
+.thinking-block > details {
+    flex: 1;
+    min-width: 0;
+    background: rgba(249, 115, 22, 0.04);
+    border: 1px solid rgba(249, 115, 22, 0.15);
+    border-radius: var(--radius-sm);
+    overflow: hidden;
+}
+
+.thinking-summary {
+    font-family: var(--font-mono);
+    font-size: 0.68rem;
+    font-weight: 600;
+    color: var(--coral);
+    padding: 8px 12px;
+    cursor: pointer;
+    list-style: none;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    user-select: none;
+}
+
+.thinking-summary::before {
+    content: '▶';
+    font-size: 0.55rem;
+    transition: transform 0.2s;
+    display: inline-block;
+}
+
+.thinking-block[open] > .thinking-summary::before {
+    transform: rotate(90deg);
+}
+
+.thinking-summary::-webkit-details-marker {
+    display: none;
+}
+
+.thinking-content {
+    font-family: var(--font-mono);
+    font-size: 0.75rem;
+    color: var(--text-secondary);
+    padding: 0 12px 12px;
+    line-height: 1.6;
+    white-space: pre-wrap;
+    word-break: break-word;
+    max-height: 300px;
+    overflow-y: auto;
+    border-top: 1px solid rgba(249, 115, 22, 0.15);
+}
+
+/* ═══════════════════════════════════════════
    TOOL CALL DISPLAY
    ═══════════════════════════════════════════ */
 .tool-call {

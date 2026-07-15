@@ -22,6 +22,8 @@ from pydantic_ai.messages import (
     SystemPromptPart,
     TextContent,
     TextPart,
+    ThinkingPart,
+    ThinkingPartDelta,
     ToolCallPart,
     ToolReturnPart,
     UserContent,
@@ -63,6 +65,70 @@ async def web_search(query: str) -> str:
     except Exception as e:
         log.error(f"WEB_SEARCH error: {e}")
         return f"Search failed: {e}"
+
+
+# --- HTML-to-text extraction ---
+
+_MAX_PAGE_SIZE = 50_000  # 50KB limit
+_FETCH_TIMEOUT = 30  # seconds
+
+
+def _html_to_text(html: str) -> str:
+    """Extract readable text from HTML using stdlib HTMLParser."""
+    from html.parser import HTMLParser
+
+    class _TextExtractor(HTMLParser):
+        def __init__(self):
+            super().__init__()
+            self._text = []
+            self._skip = 0
+
+        def handle_starttag(self, tag, attrs):
+            if tag in ("script", "style", "noscript"):
+                self._skip += 1
+
+        def handle_endtag(self, tag):
+            if tag in ("script", "style", "noscript") and self._skip > 0:
+                self._skip -= 1
+
+        def handle_data(self, data):
+            if self._skip == 0 and data.strip():
+                self._text.append(data.strip())
+
+        def get_text(self):
+            return "\n".join(t for t in self._text if t)
+
+    extractor = _TextExtractor()
+    extractor.feed(html)
+    return extractor.get_text()
+
+
+@_tool_agent.tool_plain
+async def open_web_page(url: str) -> str:
+    """Fetch and extract readable text content from a web page URL."""
+    import httpx
+
+    log = trace_logger.logger
+    log.debug(f"OPEN_WEB_PAGE url={url!r}")
+
+    try:
+        async with httpx.AsyncClient(timeout=_FETCH_TIMEOUT) as client:
+            response = await client.get(url)
+            response.raise_for_status()
+
+            raw = response.text
+            if len(raw) > _MAX_PAGE_SIZE:
+                raw = raw[:_MAX_PAGE_SIZE]
+
+            text = _html_to_text(raw)
+            log.debug(f"OPEN_WEB_PAGE extracted {len(text)} chars")
+            return text if text else "(page contained no readable text)"
+    except httpx.TimeoutException:
+        log.error(f"OPEN_WEB_PAGE timeout: {url}")
+        return f"Error: Request timed out after {_FETCH_TIMEOUT}s"
+    except Exception as e:
+        log.error(f"OPEN_WEB_PAGE error: {e}")
+        return f"Error fetching page: {e}"
 
 
 # --- Message conversion ---
@@ -279,9 +345,39 @@ class ChatAgent:
                 user_prompt=None,
                 message_history=pai_messages,
             ) as result:
-                # stream_text(delta=True) yields incremental text deltas
-                async for delta in result.stream_text(delta=True, debounce_by=0.05):
-                    yield {"content": delta}
+                # Use stream_response() to access all response parts including thinking
+                saw_thinking = False
+                thinking_done_emitted = False
+                saw_text = False
+
+                async for response in result.stream_response(debounce_by=0.05):
+                    for part in response.parts:
+                        if isinstance(part, ThinkingPartDelta):
+                            saw_thinking = True
+                            delta = part.content_delta
+                            if delta:
+                                yield {"thinking": delta}
+                        elif isinstance(part, ThinkingPart):
+                            saw_thinking = True
+                            # Complete thinking part — emit done marker before any text
+                            if not thinking_done_emitted:
+                                thinking_done_emitted = True
+                                yield {"thinking_done": True}
+                        elif isinstance(part, TextPart):
+                            if part.content:
+                                # Emit thinking_done before first text if thinking occurred
+                                # but thinking_done hasn't been emitted yet
+                                if saw_thinking and not thinking_done_emitted:
+                                    thinking_done_emitted = True
+                                    yield {"thinking_done": True}
+                                yield {"content": part.content}
+                                saw_text = True
+                        # ToolCallPart, ToolReturnPart, etc. are handled internally
+
+                # If thinking was never seen (model doesn't support it), emit marker
+                # but only if we saw text content
+                if not thinking_done_emitted and saw_text:
+                    yield {"thinking_done": True}
 
             # Log usage
             usage = result.usage

@@ -216,6 +216,10 @@ export async function sendMessage(dom) {
     let tokenCount = 0;
     let firstTokenTime = null;
 
+    // Thinking token tracking
+    let thinkingContent = "";
+    let thinkingDone = false;
+
     // Create assistant message placeholder
     const assistantEl = appendMessage(dom, { role: "assistant", content: "" }, "assistant");
     const contentEl = assistantEl.querySelector(".message-text");
@@ -278,6 +282,40 @@ export async function sendMessage(dom) {
                             metrics.completionTokens = parsed.__usage__.completion_tokens || 0;
                             metrics.promptTokens = parsed.__usage__.prompt_tokens || 0;
                             updateMetrics(dom, metrics);
+                            continue;
+                        }
+
+                        // Thinking token delta
+                        if (parsed.thinking !== undefined) {
+                            const delta = parsed.thinking;
+                            if (typeof delta === "string" && delta.length > 0) {
+                                thinkingContent += delta;
+                                // Update streaming indicator to show "Thinking..."
+                                if (dom.streamingIndicator && dom.streamingIndicatorText) {
+                                    dom.streamingIndicatorText.textContent = "Thinking...";
+                                }
+                                scrollToBottom(dom.chatMessages);
+                            }
+                            continue;
+                        }
+
+                        // Thinking complete marker
+                        if (parsed.thinking_done) {
+                            thinkingDone = true;
+                            // Hide streaming indicator
+                            if (dom.streamingIndicator) dom.streamingIndicator.style.display = "none";
+
+                            // Render thinking block before assistant message
+                            if (thinkingContent.trim()) {
+                                const thinkingBlock = document.createElement("details");
+                                thinkingBlock.className = "thinking-block";
+                                thinkingBlock.innerHTML = `
+                                    <summary class="thinking-summary">\uD83D\uDD4E Thinking</summary>
+                                    <div class="thinking-content">${escapeHtml(thinkingContent.trim())}</div>
+                                `;
+                                assistantEl.parentNode.insertBefore(thinkingBlock, assistantEl);
+                                scrollToBottom(dom.chatMessages);
+                            }
                             continue;
                         }
 

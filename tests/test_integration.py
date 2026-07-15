@@ -362,6 +362,74 @@ class TestChatEndpoint(unittest.TestCase):
         })
         self.assertNotEqual(resp.status_code, 404)
 
+    def test_chat_streams_content_and_usage(self):
+        """ARRANGE: Mock Pydantic AI agent's stream_response
+        ACT: POST /api/chat
+        ASSERT: SSE stream contains content payloads and usage metadata"""
+        from backend.agent import ChatAgent
+        from pydantic_ai.messages import ModelResponse, TextPart
+
+        with patch.object(ChatAgent, "chat") as mock_chat:
+            async def mock_chat_generator(**kwargs):
+                yield {"content": "Hello"}
+                yield {"content": " world"}
+                yield {"thinking_done": True}
+                yield {
+                    "__usage__": {
+                        "prompt_tokens": 10,
+                        "completion_tokens": 2,
+                        "total_tokens": 12,
+                    }
+                }
+
+            mock_chat.return_value = mock_chat_generator()
+
+            resp = self.client.post("/api/chat", json={
+                "model": "test-model",
+                "messages": [{"role": "user", "content": "Hi"}],
+            })
+            self.assertEqual(resp.status_code, 200)
+            content = resp.content.decode()
+            self.assertIn('"content": "Hello"', content)
+            self.assertIn('"content": " world"', content)
+            self.assertIn('"thinking_done"', content)
+            self.assertIn('"__usage__"', content)
+            self.assertIn('"prompt_tokens": 10', content)
+
+    def test_chat_streams_thinking_tokens(self):
+        """ARRANGE: Mock Pydantic AI agent to produce thinking tokens
+        ACT: POST /api/chat
+        ASSERT: SSE stream contains thinking payloads and thinking_done marker"""
+        from backend.agent import ChatAgent
+
+        with patch.object(ChatAgent, "chat") as mock_chat:
+            async def mock_chat_generator(**kwargs):
+                yield {"thinking": "Let me think"}
+                yield {"thinking": " about this"}
+                yield {"thinking_done": True}
+                yield {"content": "The answer is 42."}
+                yield {
+                    "__usage__": {
+                        "prompt_tokens": 10,
+                        "completion_tokens": 5,
+                        "total_tokens": 15,
+                    }
+                }
+
+            mock_chat.return_value = mock_chat_generator()
+
+            resp = self.client.post("/api/chat", json={
+                "model": "test-model",
+                "messages": [{"role": "user", "content": "What is 6*7?"}],
+            })
+            self.assertEqual(resp.status_code, 200)
+            content = resp.content.decode()
+            self.assertIn('"thinking": "Let me think"', content)
+            self.assertIn('"thinking": " about this"', content)
+            self.assertIn('"thinking_done": true', content)
+            self.assertIn('"content": "The answer is 42."', content)
+            self.assertIn('"__usage__"', content)
+
 
 class TestTools(unittest.TestCase):
     """SPEC: Toggle web search tool calls."""
@@ -379,9 +447,13 @@ class TestTools(unittest.TestCase):
         self.assertIsInstance(data, list)
         tool_names = [t["function"]["name"] for t in data]
         self.assertIn("web_search", tool_names)
+        self.assertIn("open_web_page", tool_names)
         ws = next(t for t in data if t["function"]["name"] == "web_search")
         self.assertEqual(ws["type"], "function")
         self.assertIn("parameters", ws["function"])
+        owp = next(t for t in data if t["function"]["name"] == "open_web_page")
+        self.assertEqual(owp["type"], "function")
+        self.assertIn("url", owp["function"]["parameters"]["properties"])
 
     def test_execute_tool(self):
         """ARRANGE: web_search tool available
@@ -396,6 +468,19 @@ class TestTools(unittest.TestCase):
         self.assertIn("result", data)
         self.assertIsInstance(data["result"], str)
         self.assertGreater(len(data["result"]), 0)
+
+    def test_execute_open_web_page(self):
+        """ARRANGE: open_web_page tool available
+        ACT: POST /api/tool-exec with URL
+        ASSERT: Page content returned or error handled"""
+        resp = self.client.post("/api/tool-exec", json={
+            "name": "open_web_page",
+            "arguments": {"url": "http://example.com"},
+        })
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+        self.assertIn("result", data)
+        self.assertIsInstance(data["result"], str)
 
     def test_execute_unknown_tool(self):
         """ARRANGE: Unknown tool name
