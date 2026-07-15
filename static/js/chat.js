@@ -324,7 +324,7 @@ export async function sendMessage(dom) {
                             const delta = parsed.content;
                             if (typeof delta === "string" && delta.length > 0) {
                                 tokenCount++;
-                                assistantContent += delta;
+                                assistantContent = delta;
                                 renderContent(contentEl, assistantContent);
                                 scrollToBottom(dom.chatMessages);
 
