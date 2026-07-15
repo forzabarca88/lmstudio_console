@@ -13,6 +13,7 @@ export const state = {
     models: [],
     loadedModels: new Set(),
     selectedModel: null,
+    isLmStudioEndpoint: false, // true = LM Studio (models need loading), false = standard OpenAI
     chatMessages: [],
     systemPrompt: "You are a helpful assistant.",
     temperature: 0.7,

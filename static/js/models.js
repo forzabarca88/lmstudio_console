@@ -12,12 +12,14 @@ import { enableChatControls, updateStatus } from "./connection.js";
  * Sync loaded model state from the LM Studio native API.
  * Updates state.loadedModels and model.loaded_instances to reflect
  * what the server actually has loaded at this moment.
- * Silently fails if the endpoint is not LM Studio.
+ * If the endpoint is not LM Studio (standard OpenAI), all models are
+ * treated as available without loading.
  */
 export async function syncLoadedModels() {
     try {
         const lmData = await apiCall("/api/v1/models");
         const lmModels = lmData.models || [];
+        state.isLmStudioEndpoint = true;
         state.loadedModels.clear();
         for (const lmModel of lmModels) {
             const model = state.models.find(m => m.key === lmModel.key);
@@ -33,7 +35,14 @@ export async function syncLoadedModels() {
             }
         }
     } catch {
-        // Non-LM Studio endpoint — no loaded model info available
+        // Standard OpenAI-compatible endpoint — all models are always available
+        state.isLmStudioEndpoint = false;
+        for (const model of state.models) {
+            // Mark each model as ready with a virtual instance so
+            // enableChatControls can distinguish loaded vs unloaded.
+            model.loaded_instances = [{ id: `direct-${model.key}` }];
+            state.loadedModels.add(`direct-${model.key}`);
+        }
     }
 }
 
@@ -97,6 +106,8 @@ export function renderModelList(dom) {
     dom.modelList.innerHTML = llmModels.map(model => {
         const isLoaded = model.loaded_instances && model.loaded_instances.length > 0;
         const isSelected = state.selectedModel === model.key;
+        // Only show "loaded" badge for LM Studio (where loading is explicit)
+        const showLoadedBadge = state.isLmStudioEndpoint && isLoaded;
 
         return `<li class="model-item ${isLoaded ? 'loaded' : ''} ${isSelected ? 'selected' : ''}"
                      data-key="${model.key}"
@@ -104,7 +115,7 @@ export function renderModelList(dom) {
             <div class="model-info">
                 <div class="model-name">${escapeHtml(model.display_name || model.key)}</div>
             </div>
-            ${isLoaded ? '<span class="model-badge badge-loaded">loaded</span>' : ''}
+            ${showLoadedBadge ? '<span class="model-badge badge-loaded">loaded</span>' : ''}
         </li>`;
     }).join("");
 

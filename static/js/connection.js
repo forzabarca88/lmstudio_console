@@ -84,6 +84,7 @@ export function disconnect(dom) {
     state.models = [];
     state.loadedModels.clear();
     state.selectedModel = null;
+    state.isLmStudioEndpoint = false;
 
     updateStatus(dom, false);
     dom.connectBtn.textContent = "Connect";
@@ -134,13 +135,30 @@ export function updateStatus(dom, connected, statusText = null) {
 }
 
 /**
- * Enable chat controls when a model is loaded.
+ * Enable chat controls when a model is available.
+ * - LM Studio: model must be loaded (has real loaded_instances).
+ * - Standard OpenAI: any selected model is available immediately.
  * @param {Object} dom
  */
 export function enableChatControls(dom) {
-    const hasLoadedModel = state.models.some(m =>
-        m.type === "llm" && m.loaded_instances && m.loaded_instances.length > 0
-    );
+    let hasLoadedModel;
+    if (state.isLmStudioEndpoint) {
+        // LM Studio: model must be explicitly loaded
+        hasLoadedModel = state.models.some(m =>
+            m.type === "llm" && m.loaded_instances && m.loaded_instances.length > 0
+        );
+    } else {
+        // Standard OpenAI-compatible endpoint: selected model is always ready
+        hasLoadedModel = state.selectedModel !== null && state.models.length > 0;
+    }
+
+    // Show/hide load/unload buttons based on endpoint type
+    if (dom.loadModelBtn) {
+        dom.loadModelBtn.style.display = state.isLmStudioEndpoint ? "" : "none";
+    }
+    if (dom.unloadModelBtn) {
+        dom.unloadModelBtn.style.display = state.isLmStudioEndpoint ? "" : "none";
+    }
 
     dom.chatInput.disabled = !hasLoadedModel;
     dom.sendBtn.disabled = !hasLoadedModel;
