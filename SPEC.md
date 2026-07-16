@@ -47,6 +47,7 @@ The interface must be modern and responsive, with striking design.
 - Required tools:
     - `Web search` tool call so the LLM can search the web.
     - `Open web page` tool call to get contents of specific pages.
+    - `Run python code` tool call to execute python code - **ensure that this is done in a safe way to minimise security concerns**.
 
 ### User Feedback 
 
@@ -56,6 +57,7 @@ The interface must be modern and responsive, with striking design.
 - When displaying the list of available models, the UI should always show which (if any) models are currently loaded on the server.
 - UI `Connected` status should update automatically if the endpoint becomes unavailable at any point while connected.
 - When an LLM is thinking, show feedback on the UI. Also allow the thinking content to be expanded to show the thinking tokens streamed in realtime.
+- Pressing CTRL + C for the server-side process must kill all connections and stop the server (force stop after 5 seconds).
 
 ### Minimum Test Cases
 
