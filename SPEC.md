@@ -52,6 +52,7 @@ The interface must be modern and responsive, with striking design.
 ### User Feedback 
 
 - UI must show feedback to the user for all in-progress states - e.g. connecting, listing model, unloading model, loading model, waiting for chat responses, while streaming chat response until completion, etc.
+- UI must show feedback to the user for all in-progress tool calls - e.g. if searching the web, running python code, etc.
 - Timeouts must be appropriately set - e.g. loading a model can take up to 5 minutes for large models.
 - Selecting a different model in the UI or loading/unloading a model should **NOT** clear or remove the existing chat messages. User should be able to continue the existing chat even if a new model is selected.
 - When displaying the list of available models, the UI should always show which (if any) models are currently loaded on the server.
