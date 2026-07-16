@@ -25,6 +25,7 @@ The interface must be modern and responsive, with striking design.
 
 - Use `unittest` instead of pytest.
 - Validate functionality of every interface elements which the end user will interact with.
+- Front-end testing must be included, and you should validate the interface using screenshots.
 
 ## Requirements
 
