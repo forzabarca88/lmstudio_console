@@ -29,6 +29,7 @@ from pydantic_ai.messages import (
     UserContent,
     UserPromptPart,
 )
+from pydantic_ai.capabilities import Thinking
 from pydantic_ai.models.openai import OpenAIChatModel
 from pydantic_ai.providers.openai import OpenAIProvider
 from pydantic_ai.settings import ModelSettings
@@ -344,6 +345,7 @@ class ChatAgent:
             async with agent.run_stream(
                 user_prompt=None,
                 message_history=pai_messages,
+                capabilities=[Thinking()],
             ) as result:
                 # Use stream_response() to access all response parts including thinking
                 saw_thinking = False
@@ -352,31 +354,31 @@ class ChatAgent:
 
                 async for response in result.stream_response(debounce_by=0.05):
                     for part in response.parts:
+                        pname = type(part).__name__
                         if isinstance(part, ThinkingPartDelta):
+                            log.debug(f"PART: {pname} delta={part.content_delta!r:.60s}")
                             saw_thinking = True
                             delta = part.content_delta
                             if delta:
                                 yield {"thinking": delta}
                         elif isinstance(part, ThinkingPart):
+                            log.debug(f"PART: {pname} content={part.content!r:.60s}")
                             saw_thinking = True
-                            # Complete thinking part — emit done marker before any text
-                            if not thinking_done_emitted:
-                                thinking_done_emitted = True
-                                yield {"thinking_done": True}
+                            # ThinkingPart.content is FULL accumulated text (like TextPart)
+                            # Emit thinking_full for every ThinkingPart so frontend updates in real-time
+                            if part.content:
+                                yield {"thinking_full": part.content}
                         elif isinstance(part, TextPart):
                             if part.content:
-                                # Emit thinking_done before first text if thinking occurred
-                                # but thinking_done hasn't been emitted yet
-                                if saw_thinking and not thinking_done_emitted:
-                                    thinking_done_emitted = True
-                                    yield {"thinking_done": True}
                                 yield {"content": part.content}
                                 saw_text = True
                         # ToolCallPart, ToolReturnPart, etc. are handled internally
 
-                # If thinking was never seen (model doesn't support it), emit marker
-                # but only if we saw text content
-                if not thinking_done_emitted and saw_text:
+                # Emit thinking_done at end of stream if thinking was seen
+                if saw_thinking:
+                    yield {"thinking_done": True}
+                # If thinking was never seen but text was produced, emit marker
+                elif saw_text:
                     yield {"thinking_done": True}
 
             # Log usage

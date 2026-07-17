@@ -203,13 +203,6 @@ export async function sendMessage(dom) {
     // Render user message with attachment indicators
     appendMessage(dom, userMsg, "user", currentAttachments);
 
-    // Show streaming indicator and metrics
-    if (dom.streamingIndicator) {
-        dom.streamingIndicator.style.display = "flex";
-        scrollToBottom(dom.chatMessages);
-    }
-    dom.chatMetrics.style.display = "flex";
-
     // Reset metrics for this turn
     const metrics = { tokensPerSecond: 0, timeToFirstToken: null, totalTokens: 0 };
     const streamStart = Date.now();
@@ -219,10 +212,83 @@ export async function sendMessage(dom) {
     // Thinking token tracking
     let thinkingContent = "";
     let thinkingDone = false;
+    let thinkingWrapper = null; // outer <div class="thinking-block">
+    let thinkingEl = null;      // inner <details>
+    let thinkingContentEl = null;
+    let thinkingSummaryEl = null;
+    let thinkingSeen = false;   // tracks if any thinking events arrived
 
-    // Create assistant message placeholder
-    const assistantEl = appendMessage(dom, { role: "assistant", content: "" }, "assistant");
-    const contentEl = assistantEl.querySelector(".message-text");
+    // Assistant message placeholder
+    let assistantEl = null;
+    let contentEl = null;
+
+    // Create assistant placeholder immediately so content events have somewhere to render
+    createAssistantPlaceholder();
+
+    // Show streaming indicator with "Thinking..." text
+    if (dom.streamingIndicator) {
+        dom.streamingIndicator.style.display = "flex";
+        if (dom.streamingIndicatorText) {
+            dom.streamingIndicatorText.textContent = "Generating...";
+        }
+        scrollToBottom(dom.chatMessages);
+    }
+    dom.chatMetrics.style.display = "flex";
+
+    /**
+     * Create the assistant message placeholder.
+     */
+    function createAssistantPlaceholder() {
+        assistantEl = appendMessage(dom, { role: "assistant", content: "" }, "assistant");
+        dom.chatMessages.appendChild(assistantEl);
+        contentEl = assistantEl.querySelector(".message-text");
+    }
+
+    /**
+     * Create thinking block lazily - only when first thinking event arrives.
+     * Inserted before the assistant placeholder.
+     */
+    function createThinkingBlock() {
+        thinkingWrapper = document.createElement("div");
+        thinkingWrapper.className = "thinking-block";
+
+        const avatar = document.createElement("div");
+        avatar.className = "message-avatar";
+        avatar.textContent = "\uD83E\uDD40";
+        thinkingWrapper.appendChild(avatar);
+
+        thinkingEl = document.createElement("details");
+        thinkingEl.open = true;
+        thinkingWrapper.appendChild(thinkingEl);
+
+        thinkingSummaryEl = document.createElement("summary");
+        thinkingSummaryEl.className = "thinking-summary";
+        thinkingSummaryEl.textContent = "\uD83D\uDD4E Thinking";
+        thinkingEl.appendChild(thinkingSummaryEl);
+
+        thinkingContentEl = document.createElement("div");
+        thinkingContentEl.className = "thinking-content";
+        thinkingEl.appendChild(thinkingContentEl);
+
+        // Insert before assistant placeholder
+        if (assistantEl && assistantEl.parentNode) {
+            assistantEl.parentNode.insertBefore(thinkingWrapper, assistantEl);
+        } else {
+            dom.chatMessages.appendChild(thinkingWrapper);
+        }
+        scrollToBottom(dom.chatMessages);
+    }
+
+    /**
+     * Finalize thinking block: close it (collapsed) and render final content.
+     */
+    function finalizeThinkingBlock() {
+        if (!thinkingEl) return;
+        // Collapse the thinking block after it's done
+        thinkingEl.open = false;
+        thinkingContentEl.innerHTML = escapeHtml(thinkingContent.trim());
+        scrollToBottom(dom.chatMessages);
+    }
 
     // Build messages array with system prompt
     const messages = [];
@@ -285,16 +351,28 @@ export async function sendMessage(dom) {
                             continue;
                         }
 
-                        // Thinking token delta
+                        // Thinking content update
                         if (parsed.thinking !== undefined) {
-                            const delta = parsed.thinking;
-                            if (typeof delta === "string" && delta.length > 0) {
-                                thinkingContent += delta;
-                                // Update streaming indicator to show "Thinking..."
-                                if (dom.streamingIndicator && dom.streamingIndicatorText) {
-                                    dom.streamingIndicatorText.textContent = "Thinking...";
+                            if (typeof parsed.thinking === "string" && parsed.thinking.length > 0) {
+                                thinkingSeen = true;
+                                thinkingContent += parsed.thinking;
+                                if (!thinkingEl) createThinkingBlock();
+                                if (thinkingContentEl) {
+                                    thinkingContentEl.textContent = thinkingContent;
+                                    scrollToBottom(dom.chatMessages);
                                 }
-                                scrollToBottom(dom.chatMessages);
+                            }
+                            continue;
+                        }
+                        if (parsed.thinking_full !== undefined) {
+                            if (typeof parsed.thinking_full === "string" && parsed.thinking_full.length > 0) {
+                                thinkingSeen = true;
+                                thinkingContent = parsed.thinking_full;
+                                if (!thinkingEl) createThinkingBlock();
+                                if (thinkingContentEl) {
+                                    thinkingContentEl.textContent = thinkingContent;
+                                    scrollToBottom(dom.chatMessages);
+                                }
                             }
                             continue;
                         }
@@ -302,19 +380,15 @@ export async function sendMessage(dom) {
                         // Thinking complete marker
                         if (parsed.thinking_done) {
                             thinkingDone = true;
-                            // Hide streaming indicator
-                            if (dom.streamingIndicator) dom.streamingIndicator.style.display = "none";
 
-                            // Render thinking block before assistant message
-                            if (thinkingContent.trim()) {
-                                const thinkingBlock = document.createElement("details");
-                                thinkingBlock.className = "thinking-block";
-                                thinkingBlock.innerHTML = `
-                                    <summary class="thinking-summary">\uD83D\uDD4E Thinking</summary>
-                                    <div class="thinking-content">${escapeHtml(thinkingContent.trim())}</div>
-                                `;
-                                assistantEl.parentNode.insertBefore(thinkingBlock, assistantEl);
-                                scrollToBottom(dom.chatMessages);
+                            // Finalize thinking block if thinking was seen
+                            if (thinkingSeen && thinkingContent.trim() && thinkingEl) {
+                                finalizeThinkingBlock();
+                            }
+
+                            // Update streaming indicator
+                            if (dom.streamingIndicatorText) {
+                                dom.streamingIndicatorText.textContent = "Streaming response...";
                             }
                             continue;
                         }
@@ -323,7 +397,18 @@ export async function sendMessage(dom) {
                         if (parsed.content !== undefined) {
                             const delta = parsed.content;
                             if (typeof delta === "string" && delta.length > 0) {
+                                // If thinking was seen but not finalized, do it now
+                                if (!thinkingDone && thinkingSeen && thinkingContent.trim()) {
+                                    thinkingDone = true;
+                                    if (thinkingEl) finalizeThinkingBlock();
+                                    if (dom.streamingIndicatorText) {
+                                        dom.streamingIndicatorText.textContent = "Streaming response...";
+                                    }
+                                }
+
                                 tokenCount++;
+                                // TextPart.content from Pydantic AI is the FULL accumulated text,
+                                // NOT a delta. So we assign (=) not append (+=).
                                 assistantContent = delta;
                                 renderContent(contentEl, assistantContent);
                                 scrollToBottom(dom.chatMessages);
@@ -352,6 +437,11 @@ export async function sendMessage(dom) {
         // Hide streaming indicator
         if (dom.streamingIndicator) dom.streamingIndicator.style.display = "none";
 
+        // Finalize thinking block if stream ended without thinking_done
+        if (!thinkingDone && thinkingSeen && thinkingContent.trim() && thinkingEl) {
+            finalizeThinkingBlock();
+        }
+
         // Final metrics
         const totalDuration = (Date.now() - streamStart) / 1000;
         metrics.tokensPerSecond = totalDuration > 0 ? tokenCount / totalDuration : 0;
@@ -359,11 +449,13 @@ export async function sendMessage(dom) {
         metrics.totalTokens = tokenCount;
         updateMetrics(dom, metrics);
 
-        // Save assistant message
+        // Save assistant message to state
         const assistantMsg = { role: "assistant", content: assistantContent };
         state.chatMessages.push(assistantMsg);
         state.metrics = { ...metrics };
-        renderContent(contentEl, assistantContent);
+
+        // Content was already rendered in real-time during the stream,
+        // so no need to re-render here
 
         // Save session to history
         saveCurrentSession();
@@ -373,9 +465,11 @@ export async function sendMessage(dom) {
         // Hide streaming indicator on error
         if (dom.streamingIndicator) dom.streamingIndicator.style.display = "none";
 
-        // Remove the empty assistant placeholder and show error message
-        assistantEl.remove();
+        // Clean up thinking block and assistant placeholder on error
+        if (thinkingWrapper) thinkingWrapper.remove();
+        if (assistantEl) assistantEl.remove();
 
+        // Show error message
         const errorEl = document.createElement("div");
         errorEl.className = "message assistant";
         errorEl.innerHTML = `

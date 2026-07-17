@@ -1373,7 +1373,7 @@ input[type="range"] {
     display: inline-block;
 }
 
-.thinking-block[open] > .thinking-summary::before {
+.thinking-block > details[open] > .thinking-summary::before {
     transform: rotate(90deg);
 }
 

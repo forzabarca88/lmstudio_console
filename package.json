@@ -1,0 +1,23 @@
+{
+  "name": "lmstudio_console",
+  "version": "1.0.0",
+  "description": "Remote web management dashboard and chat interface for LM Studio.",
+  "main": "index.js",
+  "directories": {
+    "test": "tests"
+  },
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://codeberg.org/phoenix_winger/lmstudio_console.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "dependencies": {
+    "playwright": "^1.61.1"
+  }
+}

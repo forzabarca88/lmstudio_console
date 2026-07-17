@@ -39,6 +39,7 @@ const dom = {
     metricTokensValue: document.getElementById("metricTokensValue"),
     chatMessages: document.getElementById("chatMessages"),
     streamingIndicator: document.getElementById("streamingIndicator"),
+    streamingIndicatorText: document.getElementById("streamingIndicatorText"),
     chatModelLabel: document.getElementById("chatModelLabel"),
     newChatBtn: document.getElementById("newChatBtn"),
     chatInput: document.getElementById("chatInput"),
