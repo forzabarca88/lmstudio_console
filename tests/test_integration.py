@@ -493,6 +493,41 @@ class TestTools(unittest.TestCase):
         self.assertEqual(resp.status_code, 400)
         self.assertIn("error", resp.json())
 
+    def test_execute_run_python_code(self):
+        """ARRANGE: run_python_code tool available
+        ACT: POST /api/tool-exec with code
+        ASSERT: Output returned"""
+        resp = self.client.post("/api/tool-exec", json={
+            "name": "run_python_code",
+            "arguments": {"code": "print('hello')"},
+        })
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+        self.assertIn("result", data)
+        self.assertIn("hello", data["result"])
+
+    def test_execute_run_python_code_blocked(self):
+        """ARRANGE: Code with blocked operation
+        ACT: POST /api/tool-exec with import
+        ASSERT: Blocked error returned"""
+        resp = self.client.post("/api/tool-exec", json={
+            "name": "run_python_code",
+            "arguments": {"code": "import os"},
+        })
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+        self.assertIn("Blocked operation", data["result"])
+
+    def test_list_tools_includes_run_python_code(self):
+        """ARRANGE: Server running
+        ACT: GET /api/tools
+        ASSERT: run_python_code included in tool list"""
+        resp = self.client.get("/api/tools")
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+        tool_names = [t["function"]["name"] for t in data]
+        self.assertIn("run_python_code", tool_names)
+
 
 class TestFileUpload(unittest.TestCase):
     """SPEC: Attach files for multimodal models."""

@@ -35,101 +35,7 @@ from pydantic_ai.providers.openai import OpenAIProvider
 from pydantic_ai.settings import ModelSettings
 
 from backend.logger import trace_logger
-
-
-# --- Tool definitions registered on a shared agent ---
-
-# Shared agent holds tool definitions. Per-request agents are created
-# with the correct model and inherit these tools.
-_tool_agent = Agent()
-
-
-@_tool_agent.tool_plain
-async def web_search(query: str) -> str:
-    """Search the web for information about a given query."""
-    from ddgs import DDGS
-
-    log = trace_logger.logger
-    log.debug(f"WEB_SEARCH query={query!r}")
-
-    try:
-        ddgs = DDGS()
-        results = ddgs.text(query, max_results=5)
-        entries = []
-        for i, r in enumerate(results, 1):
-            entries.append(
-                f"{i}. {r['title']}\n   {r['href']}\n   {r['body'][:200]}"
-            )
-        output = "\n\n".join(entries) if entries else "No results found."
-        log.debug(f"WEB_SEARCH results={len(results)}")
-        return output
-    except Exception as e:
-        log.error(f"WEB_SEARCH error: {e}")
-        return f"Search failed: {e}"
-
-
-# --- HTML-to-text extraction ---
-
-_MAX_PAGE_SIZE = 50_000  # 50KB limit
-_FETCH_TIMEOUT = 30  # seconds
-
-
-def _html_to_text(html: str) -> str:
-    """Extract readable text from HTML using stdlib HTMLParser."""
-    from html.parser import HTMLParser
-
-    class _TextExtractor(HTMLParser):
-        def __init__(self):
-            super().__init__()
-            self._text = []
-            self._skip = 0
-
-        def handle_starttag(self, tag, attrs):
-            if tag in ("script", "style", "noscript"):
-                self._skip += 1
-
-        def handle_endtag(self, tag):
-            if tag in ("script", "style", "noscript") and self._skip > 0:
-                self._skip -= 1
-
-        def handle_data(self, data):
-            if self._skip == 0 and data.strip():
-                self._text.append(data.strip())
-
-        def get_text(self):
-            return "\n".join(t for t in self._text if t)
-
-    extractor = _TextExtractor()
-    extractor.feed(html)
-    return extractor.get_text()
-
-
-@_tool_agent.tool_plain
-async def open_web_page(url: str) -> str:
-    """Fetch and extract readable text content from a web page URL."""
-    import httpx
-
-    log = trace_logger.logger
-    log.debug(f"OPEN_WEB_PAGE url={url!r}")
-
-    try:
-        async with httpx.AsyncClient(timeout=_FETCH_TIMEOUT) as client:
-            response = await client.get(url)
-            response.raise_for_status()
-
-            raw = response.text
-            if len(raw) > _MAX_PAGE_SIZE:
-                raw = raw[:_MAX_PAGE_SIZE]
-
-            text = _html_to_text(raw)
-            log.debug(f"OPEN_WEB_PAGE extracted {len(text)} chars")
-            return text if text else "(page contained no readable text)"
-    except httpx.TimeoutException:
-        log.error(f"OPEN_WEB_PAGE timeout: {url}")
-        return f"Error: Request timed out after {_FETCH_TIMEOUT}s"
-    except Exception as e:
-        log.error(f"OPEN_WEB_PAGE error: {e}")
-        return f"Error fetching page: {e}"
+from backend.tools import _agent
 
 
 # --- Message conversion ---
@@ -324,11 +230,11 @@ class ChatAgent:
         model_settings = ModelSettings(temperature=temperature)
 
         # Create per-request agent
-        # If tools are enabled, inherit toolsets from the shared tool agent
+        # If tools are enabled, inherit toolsets from the shared tools agent
         agent = Agent(
             model_obj,
             model_settings=model_settings,
-            toolsets=_tool_agent.toolsets if tool_call_enabled else None,
+            toolsets=_agent.toolsets if tool_call_enabled else None,
         )
 
         # Prepend combined system prompt if any exists.
@@ -349,13 +255,29 @@ class ChatAgent:
             ) as result:
                 # Use stream_response() to access all response parts including thinking
                 saw_thinking = False
-                thinking_done_emitted = False
                 saw_text = False
+                pending_tool_calls: list[dict] = []  # Track tool calls awaiting results
 
                 async for response in result.stream_response(debounce_by=0.05):
+                    has_tool_call = False
                     for part in response.parts:
                         pname = type(part).__name__
-                        if isinstance(part, ThinkingPartDelta):
+                        if isinstance(part, ToolCallPart):
+                            # Tool call detected - emit executing event
+                            has_tool_call = True
+                            log.debug(f"PART: {pname} tool={part.tool_name} args={part.args!r:.60s}")
+                            pending_tool_calls.append({
+                                "name": part.tool_name,
+                                "args": part.args,
+                            })
+                            yield {
+                                "tool_call": {
+                                    "name": part.tool_name,
+                                    "args": part.args,
+                                    "status": "executing",
+                                }
+                            }
+                        elif isinstance(part, ThinkingPartDelta):
                             log.debug(f"PART: {pname} delta={part.content_delta!r:.60s}")
                             saw_thinking = True
                             delta = part.content_delta
@@ -372,7 +294,24 @@ class ChatAgent:
                             if part.content:
                                 yield {"content": part.content}
                                 saw_text = True
-                        # ToolCallPart, ToolReturnPart, etc. are handled internally
+
+                    # If this response had tool calls, Pydantic AI will execute them
+                    # Before yielding the next response. Emit tool_result events for
+                    # pending calls once the tool execution completes.
+                    if has_tool_call and pending_tool_calls:
+                        # Tools are executing; emit done events after execution
+                        # The next stream_response() yield will have the model's
+                        # response after tool results. We emit results here since
+                        # Pydantic AI executes tools synchronously between yields.
+                        for tc in pending_tool_calls:
+                            log.debug(f"TOOL_RESULT: {tc['name']}")
+                            yield {
+                                "tool_result": {
+                                    "name": tc["name"],
+                                    "status": "done",
+                                }
+                            }
+                        pending_tool_calls.clear()
 
                 # Emit thinking_done at end of stream if thinking was seen
                 if saw_thinking:

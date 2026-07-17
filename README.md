@@ -18,9 +18,11 @@ Remote web management dashboard and chat interface for LM Studio.
 - **Persistence**: Settings saved to localStorage between sessions
 - **Trace Logging**: Detailed request/response logging on the server console
 - **File Attachments**: Upload images, audio, documents for multimodal models
-- **Agentic Tools**: Toggle tool calls (web search, open web page) for LLM-agentic behavior
+- **Agentic Tools**: Toggle tool calls (web search, open web page, run python code) for LLM-agentic behavior
+- **Tool Call Feedback**: Real-time UI feedback showing tool name, arguments, and execution status
 - **Pydantic AI**: Backend tool definitions and execution powered by Pydantic AI
 - **Thinking Tokens**: Expandable thinking blocks shown when the model produces reasoning tokens
+- **Graceful Shutdown**: Ctrl+C stops server cleanly with 5-second force-stop timeout
 
 ## Requirements
 
@@ -56,15 +58,15 @@ Open `http://localhost:8080` in your browser.
 │   ├── logger.py      # Trace logging for proxy requests
 │   ├── proxy.py       # HTTP proxy service (httpx)
 │   ├── server.py      # FastAPI application + tool/upload endpoints
-│   ├── agent.py       # Pydantic AI Agent for chat with tool call support
-│   └── tools.py       # Pydantic AI tool definitions (web search, open web page)
+│   ├── agent.py       # Pydantic AI Agent for chat with tool call feedback
+│   └── tools.py       # Pydantic AI tool definitions (web search, open web page, run python code)
 ├── static/
 │   ├── css/
 │   │   └── style.css  # Styles
 │   ├── js/
 │   │   ├── api.js     # API call utilities
 │   │   ├── app.js     # Main entry point
-│   │   ├── chat.js    # Chat + metrics + mermaid + attachments + thinking tokens
+│   │   ├── chat.js    # Chat + metrics + mermaid + attachments + thinking tokens + tool call feedback
 │   │   ├── connection.js  # Connection management + heartbeat
 │   │   ├── history.js # Chat session history
 │   │   ├── models.js  # Model management
@@ -77,8 +79,9 @@ Open `http://localhost:8080` in your browser.
 │   ├── test_integration.py
 │   ├── test_js_syntax.py
 │   ├── test_js_runtime.js
+│   ├── test_screenshot.py  # Playwright UI screenshot validation
 │   └── test_tools.py
-├── run.py             # Entry point
+├── run.py             # Entry point with graceful shutdown
 ├── pyproject.toml
 └── README.md
 ```
@@ -86,5 +89,12 @@ Open `http://localhost:8080` in your browser.
 ## Running Tests
 
 ```bash
+# Python backend tests (unit + integration)
 uv run python -m unittest discover tests -v
+
+# JavaScript runtime tests
+npm test
+
+# Screenshot validation tests (requires Playwright)
+uv run python -m unittest tests.test_screenshot -v
 ```

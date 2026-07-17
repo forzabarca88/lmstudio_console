@@ -114,6 +114,48 @@ class TestToolExecution(unittest.TestCase):
         with self.assertRaises(ValueError):
             asyncio.run(execute_tool("nonexistent", {}))
 
+    def test_execute_run_python_code(self):
+        """ARRANGE: run_python_code tool available
+        ACT: Execute simple code
+        ASSERT: Output captured correctly"""
+        result = asyncio.run(execute_tool("run_python_code", {
+            "code": "print('hello world')"
+        }))
+        self.assertIsInstance(result, str)
+        self.assertIn("hello world", result)
+
+    def test_execute_run_python_code_blocked(self):
+        """ARRANGE: Code with blocked operation
+        ACT: Execute code with import
+        ASSERT: Error returned"""
+        result = asyncio.run(execute_tool("run_python_code", {
+            "code": "import os"
+        }))
+        self.assertIn("Blocked operation", result)
+
+    def test_execute_run_python_code_too_large(self):
+        """ARRANGE: Code exceeds size limit
+        ACT: Execute oversized code
+        ASSERT: Error returned"""
+        result = asyncio.run(execute_tool("run_python_code", {
+            "code": "x = '" + "a" * 11000 + "'"
+        }))
+        self.assertIn("exceeds", result)
+
+    def test_run_python_code_schema(self):
+        """ARRANGE: Tools module loaded
+        ACT: Get tool schemas
+        ASSERT: run_python_code tool has correct schema"""
+        schemas = get_tool_schemas()
+        rpc = next((s for s in schemas if s["function"]["name"] == "run_python_code"), None)
+        self.assertIsNotNone(rpc)
+        self.assertEqual(rpc["type"], "function")
+        self.assertIn("description", rpc["function"])
+        params = rpc["function"]["parameters"]
+        self.assertEqual(params["type"], "object")
+        self.assertIn("code", params["properties"])
+        self.assertIn("code", params["required"])
+
 
 if __name__ == "__main__":
     unittest.main()

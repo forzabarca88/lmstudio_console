@@ -22,15 +22,15 @@
 │   ├── logger.py            # Trace logging for proxy requests with shared logger and RequestTrace context
 │   ├── proxy.py             # HTTP proxy service using httpx for forwarding requests to LM Studio/OpenAI endpoints with streaming support
 │   ├── server.py            # FastAPI application with proxy routes, chat endpoint, tool endpoints, file upload, and CORS middleware
-│   ├── agent.py             # Pydantic AI Agent wrapper for chat with automatic tool call handling and message format conversion
-│   └── tools.py             # Pydantic AI tool definitions (web_search, open_web_page) with OpenAI-compatible schema generation
+│   ├── agent.py             # Pydantic AI Agent wrapper for chat with automatic tool call handling, tool call feedback events, and message format conversion
+│   └── tools.py             # Pydantic AI tool definitions (web_search, open_web_page, run_python_code) with OpenAI-compatible schema generation
 ├── static/
 │   ├── css/
 │   │   └── style.css        # Complete styling with dark theme, responsive design, animations, and component styles
 │   ├── js/
 │   │   ├── api.js           # API call utilities for proxy requests, streaming, and chat endpoint
 │   │   ├── app.js           # Main entry point wiring all modules together with event bindings
-│   │   ├── chat.js          # Chat functionality: send messages, streaming responses, message rendering, metrics, file attachments
+│   │   ├── chat.js          # Chat functionality: send messages, streaming responses, message rendering, metrics, file attachments, tool call feedback
 │   │   ├── connection.js    # Connection management: connect/disconnect, status updates, heartbeat monitoring
 │   │   ├── history.js       # Chat session history: render, continue, delete sessions
 │   │   ├── models.js        # Model management: list, refresh, load, unload models with LM Studio native API
@@ -44,7 +44,8 @@
 │   ├── test_integration.py  # Integration tests covering SPEC requirements: connect, list models, load/unload, chat, metrics, history, tools
 │   ├── test_tools.py        # Unit tests for tool schema generation and execution
 │   ├── test_js_runtime.js   # Node.js runtime tests for state management, API calls, and UI utilities
-│   └── test_js_syntax.py    # Syntax validation tests for all JavaScript modules
+│   ├── test_js_syntax.py    # Syntax validation tests for all JavaScript modules
+│   └── test_screenshot.py   # Playwright screenshot validation tests for UI rendering
 ├── .pytest_cache/
 │   └── README.md            # pytest cache directory marker
 ├── AGENTS.md                # Project guidelines and documentation
@@ -53,7 +54,7 @@
 ├── pyproject.toml           # Python project configuration with dependencies
 ├── package.json             # Node.js project configuration for frontend dependencies
 ├── package-lock.json        # Node.js dependency lock file
-└── run.py                   # Entry point for starting the server
+└── run.py                   # Entry point for starting the server with graceful shutdown
 ```
 
 ### Server Restart

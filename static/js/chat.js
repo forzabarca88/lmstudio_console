@@ -218,6 +218,9 @@ export async function sendMessage(dom) {
     let thinkingSummaryEl = null;
     let thinkingSeen = false;   // tracks if any thinking events arrived
 
+    // Tool call tracking
+    const toolCallMap = new Map(); // name -> DOM element
+
     // Assistant message placeholder
     let assistantEl = null;
     let contentEl = null;
@@ -287,6 +290,84 @@ export async function sendMessage(dom) {
         // Collapse the thinking block after it's done
         thinkingEl.open = false;
         thinkingContentEl.innerHTML = escapeHtml(thinkingContent.trim());
+        scrollToBottom(dom.chatMessages);
+    }
+
+    /**
+     * Create a tool call element and insert before the assistant placeholder.
+     */
+    function createToolCallElement(name, args) {
+        const el = document.createElement("div");
+        el.className = "tool-call";
+
+        const avatar = document.createElement("div");
+        avatar.className = "message-avatar";
+        avatar.textContent = "🔧";
+        el.appendChild(avatar);
+
+        const content = document.createElement("div");
+        content.className = "tool-call-content";
+
+        const header = document.createElement("div");
+        header.className = "tool-call-header";
+
+        const nameEl = document.createElement("span");
+        nameEl.className = "tool-call-name";
+        nameEl.textContent = name.replace(/_/g, " ");
+        header.appendChild(nameEl);
+
+        const statusEl = document.createElement("span");
+        statusEl.className = "tool-call-status executing";
+        statusEl.textContent = "executing";
+        header.appendChild(statusEl);
+        content.appendChild(header);
+
+        const argsEl = document.createElement("div");
+        argsEl.className = "tool-call-args";
+        try {
+            argsEl.textContent = typeof args === "string" ? JSON.stringify(JSON.parse(args), null, 2) : args;
+        } catch {
+            argsEl.textContent = args;
+        }
+        content.appendChild(argsEl);
+
+        // Result placeholder (hidden until done)
+        const resultEl = document.createElement("div");
+        resultEl.className = "tool-call-result";
+        resultEl.style.display = "none";
+        content.appendChild(resultEl);
+
+        el.appendChild(content);
+
+        // Insert before assistant placeholder
+        if (assistantEl && assistantEl.parentNode) {
+            assistantEl.parentNode.insertBefore(el, assistantEl);
+        } else {
+            dom.chatMessages.appendChild(el);
+        }
+
+        // Store reference for later update
+        toolCallMap.set(name, { el, statusEl, resultEl });
+        scrollToBottom(dom.chatMessages);
+        return el;
+    }
+
+    /**
+     * Finalize a tool call: update status to done and show result.
+     */
+    function finalizeToolCall(name, result) {
+        const entry = toolCallMap.get(name);
+        if (!entry) return;
+
+        entry.statusEl.className = "tool-call-status done";
+        entry.statusEl.textContent = "done";
+
+        if (result) {
+            entry.resultEl.style.display = "block";
+            entry.resultEl.textContent = result;
+        }
+
+        toolCallMap.delete(name);
         scrollToBottom(dom.chatMessages);
     }
 
@@ -393,6 +474,30 @@ export async function sendMessage(dom) {
                             continue;
                         }
 
+                        // Tool call event (executing)
+                        if (parsed.tool_call !== undefined) {
+                            const tc = parsed.tool_call;
+                            if (tc.name && tc.status === "executing") {
+                                if (dom.streamingIndicatorText) {
+                                    dom.streamingIndicatorText.textContent = `Running ${tc.name.replace(/_/g, " ")}...`;
+                                }
+                                createToolCallElement(tc.name, tc.args || "");
+                            }
+                            continue;
+                        }
+
+                        // Tool result event (done)
+                        if (parsed.tool_result !== undefined) {
+                            const tr = parsed.tool_result;
+                            if (tr.name && tr.status === "done") {
+                                finalizeToolCall(tr.name, tr.result || null);
+                                if (dom.streamingIndicatorText) {
+                                    dom.streamingIndicatorText.textContent = "Streaming response...";
+                                }
+                            }
+                            continue;
+                        }
+
                         // Text content delta
                         if (parsed.content !== undefined) {
                             const delta = parsed.content;
@@ -437,6 +542,12 @@ export async function sendMessage(dom) {
         // Hide streaming indicator
         if (dom.streamingIndicator) dom.streamingIndicator.style.display = "none";
 
+        // Finalize any pending tool calls that weren't resolved
+        for (const [name, entry] of toolCallMap) {
+            finalizeToolCall(name, null);
+        }
+        toolCallMap.clear();
+
         // Finalize thinking block if stream ended without thinking_done
         if (!thinkingDone && thinkingSeen && thinkingContent.trim() && thinkingEl) {
             finalizeThinkingBlock();
@@ -465,9 +576,13 @@ export async function sendMessage(dom) {
         // Hide streaming indicator on error
         if (dom.streamingIndicator) dom.streamingIndicator.style.display = "none";
 
-        // Clean up thinking block and assistant placeholder on error
+        // Clean up thinking block, assistant placeholder, and tool calls on error
         if (thinkingWrapper) thinkingWrapper.remove();
         if (assistantEl) assistantEl.remove();
+        for (const [, entry] of toolCallMap) {
+            entry.el.remove();
+        }
+        toolCallMap.clear();
 
         // Show error message
         const errorEl = document.createElement("div");
