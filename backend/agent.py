@@ -265,6 +265,7 @@ class ChatAgent:
         # even if __aenter__ raises (e.g., connection error)
         saw_thinking = False
         pending_tool_calls: dict[str, dict] = {}
+        prev_text: str = ""
 
         try:
             async with agent.run_stream(
@@ -319,8 +320,14 @@ class ChatAgent:
                             if part.content:
                                 yield {"thinking_full": part.content}
                         elif isinstance(part, TextPart):
+                            # TextPart.content is FULL accumulated text.
+                            # Emit only the incremental delta so each SSE event
+                            # represents new text (1+ tokens) for accurate metrics.
                             if part.content:
-                                yield {"content": part.content}
+                                delta = part.content[len(prev_text):]
+                                prev_text = part.content
+                                if delta:
+                                    yield {"content": delta}
 
                 # Emit thinking_done at end of stream if thinking was seen
                 if saw_thinking:

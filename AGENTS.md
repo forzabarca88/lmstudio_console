@@ -64,7 +64,8 @@
 
 When working with Pydantic AI's `stream_response()` in `backend/agent.py` and the SSE parsing in `static/js/chat.js`:
 
-- **`ThinkingPartDelta.content_delta`** — incremental delta (each chunk is a *new* piece of text). Frontend must **accumulate** with `+=`.
-- **`TextPart.content`** — full accumulated text (each chunk contains *all* text so far). Frontend must **assign** with `=`.
+- **`ThinkingPartDelta.content_delta`** — incremental delta. Backend emits `thinking` events. Frontend **accumulates** with `+=`.
+- **`ThinkingPart.content`** — full accumulated text. Backend emits `thinking_full` events. Frontend **assigns** with `=`.
+- **`TextPart.content`** — full accumulated text in Pydantic AI, but the backend converts it to incremental deltas before emitting `content` SSE events. Frontend **accumulates** with `+=`.
 
-Confusing these two will cause either duplicated content (using `+=` on TextPart) or lost content (using `=` on ThinkingPartDelta).
+The backend tracks `prev_text` to compute deltas from `TextPart` full text, so each SSE `content` event carries only new text. This enables accurate token counting for metrics.

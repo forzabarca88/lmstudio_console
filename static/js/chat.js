@@ -515,9 +515,8 @@ export async function sendMessage(dom) {
                                 }
 
                                 tokenCount++;
-                                // TextPart.content from Pydantic AI is the FULL accumulated text,
-                                // NOT a delta. So we assign (=) not append (+=).
-                                assistantContent = delta;
+                                // Backend emits incremental deltas for TextPart, so we accumulate.
+                                assistantContent += delta;
                                 renderContent(contentEl, assistantContent);
                                 scrollToBottom(dom.chatMessages);
 
@@ -558,9 +557,12 @@ export async function sendMessage(dom) {
 
         // Final metrics
         const totalDuration = (Date.now() - streamStart) / 1000;
-        metrics.tokensPerSecond = totalDuration > 0 ? tokenCount / totalDuration : 0;
+        // Use completion_tokens from backend usage for accurate TPS.
+        // tokenCount is approximate (1 per SSE event, which may contain multiple tokens).
+        const finalTokenCount = metrics.completionTokens || tokenCount;
+        metrics.tokensPerSecond = totalDuration > 0 ? finalTokenCount / totalDuration : 0;
         metrics.timeToFirstToken = firstTokenTime || 0;
-        metrics.totalTokens = tokenCount;
+        metrics.totalTokens = finalTokenCount;
         updateMetrics(dom, metrics);
 
         // Save assistant message to state

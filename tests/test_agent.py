@@ -190,10 +190,12 @@ class TestChatAgentStreaming(unittest.TestCase):
                     input_tokens=12, output_tokens=3, total_tokens=15
                 )
 
-                # stream_response() yields ModelResponse objects with parts
+                # stream_response() yields ModelResponse objects with parts.
+                # TextPart.content is FULL accumulated text (Pydantic AI semantics).
+                # Backend converts to incremental deltas for SSE events.
                 async def mock_stream_iter(debounce_by=0.05):
                     yield ModelResponse(parts=[TextPart(content="Hello")])
-                    yield ModelResponse(parts=[TextPart(content="!")])
+                    yield ModelResponse(parts=[TextPart(content="Hello!")])
 
                 mock_result.stream_response = mock_stream_iter
                 mock_cm = MagicMock()
@@ -209,7 +211,7 @@ class TestChatAgentStreaming(unittest.TestCase):
                 ):
                     collected.append(text)
 
-            # Text content first
+            # Backend emits incremental deltas: first "Hello", then "!" (the new portion)
             self.assertEqual(collected[0], {"content": "Hello"})
             self.assertEqual(collected[1], {"content": "!"})
             # Usage metadata (thinking_done only emitted when thinking was seen)
