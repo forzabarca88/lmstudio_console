@@ -219,7 +219,7 @@ export async function sendMessage(dom) {
     let thinkingSeen = false;   // tracks if any thinking events arrived
 
     // Tool call tracking
-    const toolCallMap = new Map(); // name -> DOM element
+    const toolCallMap = new Map(); // tool_call_id -> DOM element
 
     // Assistant message placeholder
     let assistantEl = null;
@@ -296,7 +296,7 @@ export async function sendMessage(dom) {
     /**
      * Create a tool call element and insert before the assistant placeholder.
      */
-    function createToolCallElement(name, args) {
+    function createToolCallElement(toolCallId, name, args) {
         const el = document.createElement("div");
         el.className = "tool-call";
 
@@ -346,28 +346,31 @@ export async function sendMessage(dom) {
             dom.chatMessages.appendChild(el);
         }
 
-        // Store reference for later update
-        toolCallMap.set(name, { el, statusEl, resultEl });
+        // Store reference for later update (keyed by tool_call_id)
+        toolCallMap.set(toolCallId, { el, statusEl, resultEl });
         scrollToBottom(dom.chatMessages);
         return el;
     }
 
     /**
-     * Finalize a tool call: update status to done and show result.
+     * Finalize a tool call: update status and show result.
+     * @param {string} toolCallId - The tool call ID.
+     * @param {string} status - "done" or "error".
+     * @param {string|null} result - Result text (may be null for errors).
      */
-    function finalizeToolCall(name, result) {
-        const entry = toolCallMap.get(name);
+    function finalizeToolCall(toolCallId, status, result) {
+        const entry = toolCallMap.get(toolCallId);
         if (!entry) return;
 
-        entry.statusEl.className = "tool-call-status done";
-        entry.statusEl.textContent = "done";
+        entry.statusEl.className = `tool-call-status ${status}`;
+        entry.statusEl.textContent = status;
 
         if (result) {
             entry.resultEl.style.display = "block";
             entry.resultEl.textContent = result;
         }
 
-        toolCallMap.delete(name);
+        toolCallMap.delete(toolCallId);
         scrollToBottom(dom.chatMessages);
     }
 
@@ -481,16 +484,16 @@ export async function sendMessage(dom) {
                                 if (dom.streamingIndicatorText) {
                                     dom.streamingIndicatorText.textContent = `Running ${tc.name.replace(/_/g, " ")}...`;
                                 }
-                                createToolCallElement(tc.name, tc.args || "");
+                                createToolCallElement(tc.tool_call_id, tc.name, tc.args || "");
                             }
                             continue;
                         }
 
-                        // Tool result event (done)
+                        // Tool result event (done or error)
                         if (parsed.tool_result !== undefined) {
                             const tr = parsed.tool_result;
-                            if (tr.name && tr.status === "done") {
-                                finalizeToolCall(tr.name, tr.result || null);
+                            if (tr.tool_call_id && (tr.status === "done" || tr.status === "error")) {
+                                finalizeToolCall(tr.tool_call_id, tr.status, tr.result || null);
                                 if (dom.streamingIndicatorText) {
                                     dom.streamingIndicatorText.textContent = "Streaming response...";
                                 }
@@ -543,8 +546,8 @@ export async function sendMessage(dom) {
         if (dom.streamingIndicator) dom.streamingIndicator.style.display = "none";
 
         // Finalize any pending tool calls that weren't resolved
-        for (const [name, entry] of toolCallMap) {
-            finalizeToolCall(name, null);
+        for (const [toolCallId] of toolCallMap) {
+            finalizeToolCall(toolCallId, "done", null);
         }
         toolCallMap.clear();
 

@@ -631,6 +631,135 @@ class TestAuthForwarding(unittest.TestCase):
         self.assertEqual(call_kwargs["headers"]["Authorization"], "Bearer my-token")
 
 
+class TestSessionManagement(unittest.TestCase):
+    """SPEC: Session lifecycle backend tests.
+
+    Full session lifecycle (save, continue, delete) is a frontend-only concept
+    (localStorage) and is tested in test_js_runtime.js.
+
+    This class verifies that the backend /api/chat endpoint correctly handles
+    multi-turn message arrays — simulating restored sessions sent by the frontend.
+    """
+
+    def setUp(self):
+        self.client = TestClient(server.app)
+
+    def test_chat_accepts_multi_turn_conversation(self):
+        """ARRANGE: Multi-turn message array simulating a restored session\nACT: POST /api/chat with conversation history\nASSERT: Endpoint accepts and processes the full message array"""
+        from backend.agent import ChatAgent
+
+        with patch.object(ChatAgent, "chat") as mock_chat:
+            async def mock_chat_generator(**kwargs):
+                yield {"content": "Based on our conversation, the answer is 42."}
+                yield {"thinking_done": True}
+                yield {"__usage__": {"prompt_tokens": 25, "completion_tokens": 10, "total_tokens": 35}}
+
+            mock_chat.return_value = mock_chat_generator()
+
+            resp = self.client.post("/api/chat", json={
+                "model": "test-model",
+                "messages": [
+                    {"role": "system", "content": "You are a helpful assistant."},
+                    {"role": "user", "content": "What is the meaning of life?"},
+                    {"role": "assistant", "content": "The meaning of life is a philosophical question."},
+                    {"role": "user", "content": "Can you give me a numerical answer?"},
+                ],
+                "temperature": 0.5,
+            })
+            self.assertEqual(resp.status_code, 200)
+            content = resp.content.decode()
+            self.assertIn('"content": "Based on our conversation, the answer is 42."', content)
+
+            # Verify agent received all 3 messages (system + 2 user + 1 assistant)
+            call_args = mock_chat.call_args
+            messages = call_args.kwargs.get("messages", call_args[1].get("messages", []))
+            self.assertEqual(len(messages), 4)
+
+    def test_chat_handles_tool_call_history(self):
+        """ARRANGE: Message array with tool call history\nACT: POST /api/chat with tool call messages\nASSERT: Endpoint processes tool call messages correctly"""
+        from backend.agent import ChatAgent
+
+        with patch.object(ChatAgent, "chat") as mock_chat:
+            async def mock_chat_generator(**kwargs):
+                yield {"content": "The search results show Python is a programming language."}
+                yield {"thinking_done": True}
+                yield {"__usage__": {"prompt_tokens": 30, "completion_tokens": 10, "total_tokens": 40}}
+
+            mock_chat.return_value = mock_chat_generator()
+
+            resp = self.client.post("/api/chat", json={
+                "model": "test-model",
+                "messages": [
+                    {"role": "user", "content": "What is Python?"},
+                    {"role": "assistant", "content": None,
+                     "tool_calls": [
+                         {
+                             "id": "call_abc123",
+                             "type": "function",
+                             "function": {
+                                 "name": "web_search",
+                                 "arguments": '{"query": "Python programming language"}',
+                             },
+                         },
+                     ],
+                     },
+                    {"role": "tool", "content": "Python is a programming language.",
+                     "tool_call_id": "call_abc123"},
+                    {"role": "user", "content": "Summarize it"},
+                ],
+            })
+            self.assertEqual(resp.status_code, 200)
+            content = resp.content.decode()
+            self.assertIn('"content": "The search results show', content)
+
+    def test_chat_single_message_still_works(self):
+        """ARRANGE: Single user message (no conversation history)\nACT: POST /api/chat with one message\nASSERT: Endpoint processes single message correctly"""
+        from backend.agent import ChatAgent
+
+        with patch.object(ChatAgent, "chat") as mock_chat:
+            async def mock_chat_generator(**kwargs):
+                yield {"content": "Hello!"}
+                yield {"thinking_done": True}
+                yield {"__usage__": {"prompt_tokens": 5, "completion_tokens": 1, "total_tokens": 6}}
+
+            mock_chat.return_value = mock_chat_generator()
+
+            resp = self.client.post("/api/chat", json={
+                "model": "test-model",
+                "messages": [{"role": "user", "content": "Hi"}],
+            })
+            self.assertEqual(resp.status_code, 200)
+            content = resp.content.decode()
+            self.assertIn('"content": "Hello!"', content)
+
+    def test_chat_with_multimodal_history(self):
+        """ARRANGE: Message array with multimodal (image) content\nACT: POST /api/chat with image_url in content\nASSERT: Endpoint processes multimodal messages"""
+        from backend.agent import ChatAgent
+
+        with patch.object(ChatAgent, "chat") as mock_chat:
+            async def mock_chat_generator(**kwargs):
+                yield {"content": "That image shows a cat."}
+                yield {"thinking_done": True}
+                yield {"__usage__": {"prompt_tokens": 20, "completion_tokens": 6, "total_tokens": 26}}
+
+            mock_chat.return_value = mock_chat_generator()
+
+            resp = self.client.post("/api/chat", json={
+                "model": "test-model",
+                "messages": [
+                    {"role": "user", "content": [
+                        {"type": "text", "text": "What animal is this?"},
+                        {"type": "image_url", "image_url": {"url": "data:image/png;base64,abc123"}},
+                    ]},
+                    {"role": "assistant", "content": "That looks like a cat."},
+                    {"role": "user", "content": "What color is it?"},
+                ],
+            })
+            self.assertEqual(resp.status_code, 200)
+            content = resp.content.decode()
+            self.assertIn('"content": "That image shows a cat."', content)
+
+
 class TestErrorHandling(unittest.TestCase):
     """Error responses for invalid requests."""
 

@@ -11,6 +11,7 @@ to Pydantic AI's internal format and runs the agent.
 from __future__ import annotations
 
 import json
+import logging
 from typing import Any, AsyncIterable
 
 from pydantic_ai import Agent
@@ -60,7 +61,9 @@ def _convert_user_content(content: Any) -> list[UserContent]:
             elif part_type == "image_url":
                 url = part["image_url"].get("url", "")
                 parts.append(ImageUrl(url=url))
-            # Skip unsupported types silently
+            logging.getLogger(__name__).warning(
+                f"Unsupported content type: {part_type!r}"
+            )
         return parts if parts else [TextContent(content="")]
 
     return [TextContent(content=str(content))]
@@ -88,6 +91,8 @@ def _openai_messages_to_pai_messages(
     system_prompts: list[str] = []
     request_parts = []
     response_parts = []
+    # Map tool_call_id -> tool_name for resolving ToolReturnPart names
+    tool_call_map: dict[str, str] = {}
 
     for msg in messages:
         role = msg.get("role", "")
@@ -131,8 +136,10 @@ def _openai_messages_to_pai_messages(
             for tc in tool_calls:
                 tc_id = tc.get("id", "")
                 tc_func = tc.get("function", {})
+                tc_name = tc_func.get("name", "")
+                tool_call_map[tc_id] = tc_name
                 response_parts.append(ToolCallPart(
-                    tool_name=tc_func.get("name", ""),
+                    tool_name=tc_name,
                     args=tc_func.get("arguments", "{}"),
                     tool_call_id=tc_id,
                 ))
@@ -145,8 +152,15 @@ def _openai_messages_to_pai_messages(
 
             tool_result = msg.get("content", "")
             tool_call_id = msg.get("tool_call_id", "")
+            # Resolve tool_name from the map built during assistant processing.
+            tool_name = tool_call_map.get(tool_call_id)
+            if tool_name is None:
+                logging.getLogger(__name__).warning(
+                    f"Unresolvable tool_call_id: {tool_call_id!r} — skipping ToolReturnPart"
+                )
+                continue
             response_parts.append(ToolReturnPart(
-                tool_name="",
+                tool_name=tool_name,
                 content=tool_result,
                 tool_call_id=tool_call_id,
             ))
@@ -247,36 +261,50 @@ class ChatAgent:
             )
 
         # Run agent with streaming
+        # Declare tracking variables before try so finally can access them
+        # even if __aenter__ raises (e.g., connection error)
+        saw_thinking = False
+        pending_tool_calls: dict[str, dict] = {}
+
         try:
             async with agent.run_stream(
                 user_prompt=None,
                 message_history=pai_messages,
                 capabilities=[Thinking()],
             ) as result:
-                # Use stream_response() to access all response parts including thinking
-                saw_thinking = False
-                saw_text = False
-                pending_tool_calls: list[dict] = []  # Track tool calls awaiting results
-
                 async for response in result.stream_response(debounce_by=0.05):
-                    has_tool_call = False
                     for part in response.parts:
                         pname = type(part).__name__
                         if isinstance(part, ToolCallPart):
                             # Tool call detected - emit executing event
-                            has_tool_call = True
-                            log.debug(f"PART: {pname} tool={part.tool_name} args={part.args!r:.60s}")
-                            pending_tool_calls.append({
+                            log.debug(f"PART: {pname} tool={part.tool_name} id={part.tool_call_id} args={part.args!r:.60s}")
+                            pending_tool_calls[part.tool_call_id] = {
                                 "name": part.tool_name,
                                 "args": part.args,
-                            })
+                            }
                             yield {
                                 "tool_call": {
+                                    "tool_call_id": part.tool_call_id,
                                     "name": part.tool_name,
                                     "args": part.args,
                                     "status": "executing",
                                 }
                             }
+                        elif isinstance(part, ToolReturnPart):
+                            # Tool result from Pydantic AI's internal execution.
+                            # Match by tool_call_id to find the corresponding pending call.
+                            log.debug(f"PART: {pname} id={part.tool_call_id} content={part.content!r:.60s}")
+                            tc_id = part.tool_call_id
+                            if tc_id in pending_tool_calls:
+                                tc = pending_tool_calls.pop(tc_id)
+                                yield {
+                                    "tool_result": {
+                                        "tool_call_id": tc_id,
+                                        "name": tc["name"],
+                                        "status": "done",
+                                        "result": part.content,
+                                    }
+                                }
                         elif isinstance(part, ThinkingPartDelta):
                             log.debug(f"PART: {pname} delta={part.content_delta!r:.60s}")
                             saw_thinking = True
@@ -293,32 +321,24 @@ class ChatAgent:
                         elif isinstance(part, TextPart):
                             if part.content:
                                 yield {"content": part.content}
-                                saw_text = True
-
-                    # If this response had tool calls, Pydantic AI will execute them
-                    # Before yielding the next response. Emit tool_result events for
-                    # pending calls once the tool execution completes.
-                    if has_tool_call and pending_tool_calls:
-                        # Tools are executing; emit done events after execution
-                        # The next stream_response() yield will have the model's
-                        # response after tool results. We emit results here since
-                        # Pydantic AI executes tools synchronously between yields.
-                        for tc in pending_tool_calls:
-                            log.debug(f"TOOL_RESULT: {tc['name']}")
-                            yield {
-                                "tool_result": {
-                                    "name": tc["name"],
-                                    "status": "done",
-                                }
-                            }
-                        pending_tool_calls.clear()
 
                 # Emit thinking_done at end of stream if thinking was seen
                 if saw_thinking:
                     yield {"thinking_done": True}
-                # If thinking was never seen but text was produced, emit marker
-                elif saw_text:
-                    yield {"thinking_done": True}
+
+                # Handle orphaned tool calls (tool was called but result never arrived)
+                for tc_id, tc_info in pending_tool_calls.items():
+                    log.warning(
+                        f"ORPHANED_TOOL_CALL id={tc_id} name={tc_info['name']}"
+                    )
+                    yield {
+                        "tool_result": {
+                            "tool_call_id": tc_id,
+                            "name": tc_info["name"],
+                            "status": "error",
+                            "result": "Tool execution did not complete",
+                        }
+                    }
 
             # Log usage
             usage = result.usage
@@ -340,3 +360,18 @@ class ChatAgent:
         except Exception as e:
             log.error(f"CHAT_ERROR: {e}")
             yield {"__error__": str(e)}
+            # Handle orphaned tool calls on error (stream was interrupted)
+            for tc_id, tc_info in pending_tool_calls.items():
+                log.warning(
+                    f"ORPHANED_TOOL_CALL id={tc_id} name={tc_info['name']}"
+                )
+                yield {
+                    "tool_result": {
+                        "tool_call_id": tc_id,
+                        "name": tc_info["name"],
+                        "status": "error",
+                        "result": "Tool execution did not complete",
+                    }
+                }
+        finally:
+            pending_tool_calls.clear()

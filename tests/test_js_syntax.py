@@ -12,8 +12,8 @@ import subprocess
 import shutil
 import tempfile
 
-sys_path = os.path.dirname(os.path.dirname(__file__))
-STATIC_DIR = os.path.join(sys_path, "static", "js")
+project_root = os.path.dirname(os.path.dirname(__file__))
+STATIC_DIR = os.path.join(project_root, "static", "js")
 
 # Reserved words that cause SyntaxError in strict mode (ES modules)
 # Used as parameter names or variable names - NOT as default values

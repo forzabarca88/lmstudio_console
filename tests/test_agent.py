@@ -212,12 +212,10 @@ class TestChatAgentStreaming(unittest.TestCase):
             # Text content first
             self.assertEqual(collected[0], {"content": "Hello"})
             self.assertEqual(collected[1], {"content": "!"})
-            # thinking_done marker (model didn't produce thinking)
-            self.assertEqual(collected[2], {"thinking_done": True})
-            # Usage metadata
-            self.assertEqual(collected[3]["__usage__"]["prompt_tokens"], 12)
-            self.assertEqual(collected[3]["__usage__"]["completion_tokens"], 3)
-            self.assertEqual(collected[3]["__usage__"]["total_tokens"], 15)
+            # Usage metadata (thinking_done only emitted when thinking was seen)
+            self.assertEqual(collected[2]["__usage__"]["prompt_tokens"], 12)
+            self.assertEqual(collected[2]["__usage__"]["completion_tokens"], 3)
+            self.assertEqual(collected[2]["__usage__"]["total_tokens"], 15)
 
         asyncio.run(_run())
 
@@ -381,10 +379,100 @@ class TestChatAgentStreaming(unittest.TestCase):
 
         asyncio.run(_run())
 
-    def test_thinking_done_without_thinking(self):
+    def test_tool_call_streams_result(self):
+        """ARRANGE: ChatAgent with model that requests tool calls
+        ACT: Run chat with tool_call_enabled=True, mock stream_response to yield
+             ToolCallPart, then ToolReturnPart, then TextPart
+        ASSERT: Stream includes tool_call with tool_call_id, tool_result with
+                result field populated, then content"""
+        agent = ChatAgent("http://localhost:1234")
+
+        async def _run():
+            collected = []
+
+            with patch("backend.agent.Agent") as mock_cls:
+                mock_agent = MagicMock()
+                mock_result = MagicMock()
+                mock_result.usage = MagicMock(
+                    input_tokens=20, output_tokens=10, total_tokens=30
+                )
+
+                async def mock_stream_iter(debounce_by=0.05):
+                    # First yield: model requests a tool call
+                    yield ModelResponse(parts=[
+                        ToolCallPart(
+                            tool_name="web_search",
+                            args='{"query": "Python"}',
+                            tool_call_id="call_abc123",
+                        ),
+                    ])
+                    # Second yield: tool result from Pydantic AI's internal execution
+                    yield ModelResponse(parts=[
+                        ToolReturnPart(
+                            tool_name="web_search",
+                            content="Python is a programming language",
+                            tool_call_id="call_abc123",
+                        ),
+                    ])
+                    # Third yield: final text response after tool results
+                    yield ModelResponse(parts=[
+                        TextPart(content="Python is a versatile programming language."),
+                    ])
+
+                mock_result.stream_response = mock_stream_iter
+                mock_cm = MagicMock()
+                mock_cm.__aenter__ = AsyncMock(return_value=mock_result)
+                mock_cm.__aexit__ = AsyncMock(return_value=False)
+                mock_agent.run_stream = MagicMock(return_value=mock_cm)
+                mock_cls.return_value = mock_agent
+
+                async for text in agent.chat(
+                    model="test-model",
+                    messages=[{"role": "user", "content": "What is Python?"}],
+                    tool_call_enabled=True,
+                ):
+                    collected.append(text)
+
+            # Verify the stream sequence
+            tool_calls = [c for c in collected if "tool_call" in c]
+            tool_results = [c for c in collected if "tool_result" in c]
+            contents = [c for c in collected if "content" in c]
+            thinking_done = [c for c in collected if "thinking_done" in c]
+            usage = [c for c in collected if "__usage__" in c]
+
+            # One tool call event with tool_call_id
+            self.assertEqual(len(tool_calls), 1)
+            self.assertEqual(tool_calls[0]["tool_call"]["tool_call_id"], "call_abc123")
+            self.assertEqual(tool_calls[0]["tool_call"]["name"], "web_search")
+            self.assertEqual(tool_calls[0]["tool_call"]["status"], "executing")
+
+            # One tool result event with result content
+            self.assertEqual(len(tool_results), 1)
+            self.assertEqual(tool_results[0]["tool_result"]["tool_call_id"], "call_abc123")
+            self.assertEqual(tool_results[0]["tool_result"]["name"], "web_search")
+            self.assertEqual(tool_results[0]["tool_result"]["status"], "done")
+            self.assertEqual(
+                tool_results[0]["tool_result"]["result"],
+                "Python is a programming language",
+            )
+
+            # Final text response
+            self.assertEqual(len(contents), 1)
+            self.assertEqual(
+                contents[0]["content"],
+                "Python is a versatile programming language.",
+            )
+
+            # thinking_done not emitted (no thinking parts in this mock)
+            self.assertEqual(len(thinking_done), 0)
+            self.assertEqual(len(usage), 1)
+
+        asyncio.run(_run())
+
+    def test_no_thinking_done_without_thinking(self):
         """ARRANGE: ChatAgent with model that doesn't produce thinking
         ACT: Run chat
-        ASSERT: Content emitted first, thinking_done after (model has no thinking support)"""
+        ASSERT: Content emitted, no thinking_done (only emitted when thinking was seen)"""
         agent = ChatAgent("http://localhost:1234")
 
         async def _run():
@@ -414,9 +502,12 @@ class TestChatAgentStreaming(unittest.TestCase):
                 ):
                     collected.append(text)
 
-            # Content first, then thinking_done (model didn't produce thinking)
+            # Content first, then usage (no thinking_done since no thinking was seen)
             self.assertEqual(collected[0], {"content": "Hi there!"})
-            self.assertEqual(collected[1], {"thinking_done": True})
+            thinking_done = [c for c in collected if "thinking_done" in c]
+            self.assertEqual(len(thinking_done), 0)
+            self.assertEqual(len(collected), 2)
+            self.assertIn("__usage__", collected[1])
 
         asyncio.run(_run())
 

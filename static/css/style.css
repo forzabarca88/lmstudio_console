@@ -1451,6 +1451,12 @@ input[type="range"] {
     border: 1px solid rgba(16, 185, 129, 0.25);
 }
 
+.tool-call-status.error {
+    background: rgba(239, 68, 68, 0.12);
+    color: var(--danger);
+    border: 1px solid rgba(239, 68, 68, 0.25);
+}
+
 .tool-call-args {
     font-family: var(--font-mono);
     font-size: 0.68rem;
