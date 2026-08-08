@@ -42,6 +42,7 @@ The interface must be modern and responsive, with striking design.
 - Chat session history should be saved for atleast the last 10 sessions. Allow the user to `Delete` or `Continue` chat sessions saved in history.
 - A `Copy` button for each chat response which allows the user to copy the message to their clipboard.
 - Responses can render graphs using `Mermaid JS`.
+- The button used for sending messages should also double as a stop button for cancelling the current request. Creating a new chat should also implicitly cancel any current in-progress requests. Note that it is **critical** that the request(s) are cancelled on the server/endpoint side, not just on the client/UI side.
 - Allow user to attach files, this is important for multimodal models supporting vision, audio, etc.
 - Add toggles to allow the user to use agentic functions such as tool calls
 - Required tools:
@@ -59,6 +60,7 @@ The interface must be modern and responsive, with striking design.
 - UI `Connected` status should update automatically if the endpoint becomes unavailable at any point while connected.
 - When an LLM is thinking, show feedback on the UI. Also allow the thinking content to be expanded to show the thinking tokens streamed in realtime.
 - Pressing CTRL + C for the server-side process must kill all connections and stop the server (force stop after 5 seconds).
+- 
 
 ### Minimum Test Cases
 
