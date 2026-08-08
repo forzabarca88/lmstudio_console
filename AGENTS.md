@@ -19,33 +19,33 @@
 ├── backend/
 │   ├── __init__.py          # Empty package init
 │   ├── config.py            # Configuration from environment variables (host, port, LM Studio URL, static dir)
-│   ├── logger.py            # Trace logging for proxy requests with shared logger and RequestTrace context
-│   ├── proxy.py             # HTTP proxy service using httpx for forwarding requests to LM Studio/OpenAI endpoints with streaming support
-│   ├── server.py            # FastAPI application with proxy routes, chat endpoint, tool endpoints, file upload, and CORS middleware
-│   ├── agent.py             # Pydantic AI Agent wrapper for chat with automatic tool call handling, tool_call_id-based tool results, thinking tokens, and message format conversion
+│   ├── logger.py            # Trace logging with shared logger, RequestTrace context, and cancellation tracking
+│   ├── proxy.py             # HTTP proxy using httpx for forwarding requests to LM Studio/OpenAI endpoints with streaming and graceful cancellation support
+│   ├── server.py            # FastAPI app with proxy routes, chat endpoint (client disconnect detection, cooperative cancellation), tool endpoints, file upload, and CORS middleware
+│   ├── agent.py             # Pydantic AI Agent wrapper for chat with automatic tool call handling, tool_call_id-based results, thinking tokens, message format conversion, and cooperative cancellation support
 │   └── tools.py             # Pydantic AI tool definitions (web_search, open_web_page, run_python_code) with OpenAI-compatible schema generation
 ├── static/
 │   ├── css/
 │   │   └── style.css        # Complete styling with dark theme, responsive design, animations, and component styles
 │   ├── js/
-│   │   ├── api.js           # API call utilities for proxy requests, streaming, and chat endpoint
-│   │   ├── app.js           # Main entry point wiring all modules together with event bindings
-│   │   ├── chat.js          # Chat functionality: send messages, streaming responses, thinking blocks, tool call tracking by tool_call_id, metrics, file attachments, copy button
-│   │   ├── connection.js    # Connection management: connect/disconnect, status updates, heartbeat monitoring
-│   │   ├── history.js       # Chat session history: render, continue, delete sessions
+│   │   ├── api.js           # API call utilities for proxy requests, streaming, and chat endpoint with optional AbortSignal forwarding
+│   │   ├── app.js           # Main entry point wiring all modules together; send button toggles between send and stop/cancel
+│   │   ├── chat.js          # Chat: send messages, streaming responses, thinking blocks, tool call tracking by tool_call_id, metrics, file attachments (abortable), copy button, stop/cancel button with partial-content preservation
+│   │   ├── connection.js    # Connection management: connect/disconnect (aborts active requests), status updates, heartbeat monitoring
+│   │   ├── history.js       # Chat session history: render, continue (aborts active requests), delete sessions (aborts if current)
 │   │   ├── models.js        # Model management: list, refresh, load, unload models with LM Studio native API
-│   │   ├── state.js         # State management and localStorage persistence for settings and session history
+│   │   ├── state.js         # State management: localStorage persistence for settings/session history; runtime abort controller and reason tracking
 │   │   └── ui.js            # UI utilities: toast notifications, formatting, auto-resize, scroll, metrics display
 │   └── index.html          # Main HTML page with sidebar, chat area, and all UI elements
 ├── tests/
 │   ├── __init__.py          # Empty test package init
-│   ├── test_agent.py        # Unit tests for ChatAgent message conversion, streaming (text, thinking, tool calls), and tool_call_id-based result matching
+│   ├── test_agent.py        # Unit tests for ChatAgent message conversion, streaming (text, thinking, tool calls), tool_call_id-based result matching, and cooperative cancellation
 │   ├── test_backend.py      # Unit tests for config, logging, and proxy functionality
-│   ├── test_integration.py  # Integration tests: connect, list/load/unload models, chat, metrics, session management (multi-turn, tool history, multimodal), tools, file upload, CORS, auth, errors
+│   ├── test_integration.py  # Integration tests: connect, list/load/unload models, chat, metrics, session management (multi-turn, tool history, multimodal), tools, file upload, CORS, auth, errors, and request cancellation (chat disconnect, proxy disconnect, cooperative cancel)
 │   ├── test_tools.py        # Unit tests for tool schema generation and execution
-│   ├── test_js_runtime.js   # Node.js runtime tests: state management (defaults, persist, restore, session save with cap), UI utilities, session lifecycle (continue, delete, error handling)
+│   ├── test_js_runtime.js   # Node.js runtime tests: state management (defaults, persist, restore, session save with cap, abortActiveRequest), UI utilities, session lifecycle (continue, delete, error handling)
 │   ├── test_js_syntax.py    # Syntax validation tests for all JavaScript modules (Node.js --check and reserved word scanning)
-│   └── test_screenshot.py   # Playwright tests: visual rendering (page layout, panels, elements) and interactive behavioral tests (connect, send message, new chat, settings toggle, model load/unload, copy button)
+│   └── test_screenshot.py   # Playwright tests: visual rendering (page layout, panels, elements) and interactive behavioral tests (connect, send message, new chat, settings toggle, model load/unload, copy button, stop button, new chat cancels request)
 ├── .pytest_cache/
 │   └── README.md            # pytest cache directory marker
 ├── AGENTS.md                # Project guidelines and documentation

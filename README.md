@@ -11,7 +11,8 @@ Remote web management dashboard and chat interface for LM Studio.
 - **Mermaid JS**: Graph and diagram rendering in chat responses
 - **Chat Metrics**: Tokens/second, time to first token, and total tokens displayed live
 - **Copy Button**: One-click copy for each assistant response
-- **Session History**: Last 10 chat sessions saved; continue or delete from history
+- **Stop Button**: Send button toggles to stop button during streaming; cancels requests on both client and server/endpoint side
+- **Session History**: Last 10 chat sessions saved; continue or delete from history (both cancel active requests)
 - **Connection Monitoring**: Automatic disconnection detection via heartbeat ping
 - **Persistent Chat**: Chat messages preserved across model changes and disconnects
 - **Settings**: Configurable system prompt and temperature

@@ -5,7 +5,7 @@
 import { state, saveSettings, saveSessionHistory, saveCurrentSession } from "./state.js";
 import { showToast } from "./ui.js";
 import { enableChatControls } from "./connection.js";
-import { appendMessage } from "./chat.js";
+import { appendMessage, cancelAndResetUI } from "./chat.js";
 
 /**
  * Render the session history list in the sidebar.
@@ -72,6 +72,12 @@ export function renderHistoryList(dom) {
  * @param {string} sessionId - Session id to restore.
  */
 export function continueSession(dom, sessionId) {
+    // Cancel any active in-flight request and reset the streaming UI before
+    // switching session state, so the stop button and "Generating..."
+    // indicator don't linger on the restored view while the aborted fetch
+    // settles. (abortActiveRequest alone leaves those visible.)
+    cancelAndResetUI(dom);
+
     const session = state.sessionHistory.find(s => s.id === sessionId);
     if (!session) {
         showToast("Session not found", "error");
@@ -112,6 +118,7 @@ export function continueSession(dom, sessionId) {
         state.models.some(m => m.key === state.selectedModel && m.loaded_instances && m.loaded_instances.length > 0);
     dom.chatInput.disabled = !hasLoadedModel;
     dom.sendBtn.disabled = !hasLoadedModel;
+    if (dom.attachBtn) dom.attachBtn.disabled = !hasLoadedModel;
 
     saveSettings();
     showToast("Session restored", "success");
@@ -123,6 +130,13 @@ export function continueSession(dom, sessionId) {
  * @param {string} sessionId - Session id to delete.
  */
 export function deleteSession(dom, sessionId) {
+    // If deleting the currently active session while a request is in flight,
+    // cancel it (and reset the streaming UI) so the backend stream is torn
+    // down server-side rather than running orphaned.
+    if (sessionId === state.currentSessionId) {
+        cancelAndResetUI(dom);
+    }
+
     const session = state.sessionHistory.find(s => s.id === sessionId);
     if (!session) {
         showToast("Session not found", "error");
@@ -140,6 +154,7 @@ export function deleteSession(dom, sessionId) {
         dom.chatMetrics.style.display = "none";
         dom.chatInput.disabled = true;
         dom.sendBtn.disabled = true;
+        if (dom.attachBtn) dom.attachBtn.disabled = true;
     }
 
     state.sessionHistory = state.sessionHistory.filter(s => s.id !== sessionId);

@@ -63,6 +63,19 @@ class TraceLogger:
         trace.error = self._error_msg(error)
         self._log.error(f"ERR {trace.method:6s} {trace.path} -> {trace.target} ({duration:.3f}s): {self._error_msg(error)}")
 
+    def log_cancelled(self, trace: "RequestTrace", duration: float) -> None:
+        """Log a stream cancelled by the consumer (client disconnect or task cancellation).
+
+        Distinct from log_error: cancellations are expected when a client
+        abandons a stream, so they are recorded at INFO rather than ERROR.
+        """
+        trace.duration = duration
+        trace.error = "cancelled"
+        self._log.info(
+            f"CXL {trace.method:6s} {trace.path} -> {trace.target} "
+            f"({duration:.3f}s): stream cancelled"
+        )
+
     def log_server_error(self, method: str, path: str, error: Exception) -> None:
         """Log a server-side error (e.g. response handling failure)."""
         self._log.error(f"ERR {method:6s} {path}: {self._error_msg(error)}")

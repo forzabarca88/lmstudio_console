@@ -54,8 +54,8 @@ const historySource = readFileSync(join(staticDir, "history.js"), "utf-8");
 // Transform import statements to const assignments from loaded modules
 const transformedHistory = historySource
     .replace(
-        /import\s*{\s*state,\s*saveSettings,\s*saveSessionHistory,\s*saveCurrentSession\s*}\s*from\s*"\.\/state\.js";?/,
-        'const { state, saveSettings, saveSessionHistory, saveCurrentSession } = stateModule;'
+        /import\s*{\s*state,\s*saveSettings,\s*saveSessionHistory,\s*saveCurrentSession(?:,\s*abortActiveRequest)?\s*}\s*from\s*"\.\/state\.js";?/,
+        'const { state, saveSettings, saveSessionHistory, saveCurrentSession, abortActiveRequest } = stateModule;'
     )
     .replace(
         /import\s*{\s*showToast\s*}\s*from\s*"\.\/ui\.js";?/,
@@ -66,8 +66,8 @@ const transformedHistory = historySource
         'const enableChatControls = () => {};'
     )
     .replace(
-        /import\s*{\s*appendMessage\s*}\s*from\s*"\.\/chat\.js";?/,
-        'const appendMessage = () => {};'
+        /import\s*{\s*appendMessage(?:,\s*cancelAndResetUI)?\s*}\s*from\s*"\.\/chat\.js";?/,
+        'const appendMessage = () => {}; const cancelAndResetUI = () => {};'
     )
     .replace(/export\s+function/g, 'function');
 
@@ -144,6 +144,34 @@ Object.defineProperty(globalThis, 'crypto', {
     writable: true,
     configurable: true,
 });
+
+// Mock AbortController global — required by cancellation tests. Some Node.js
+// versions lack a global AbortController; provide a minimal mock when absent.
+// The mock (and the native, when present) expose signal.aborted and the
+// 'abort' event, which is all abortActiveRequest() relies on.
+if (typeof globalThis.AbortController === 'undefined') {
+    globalThis.AbortController = class {
+        constructor() {
+            this.signal = {
+                aborted: false,
+                _listeners: [],
+                addEventListener(type, fn) {
+                    if (type === 'abort') this._listeners.push(fn);
+                },
+                removeEventListener(type, fn) {
+                    this._listeners = this._listeners.filter(f => f !== fn);
+                },
+            };
+        }
+        abort() {
+            if (this.signal.aborted) return;
+            this.signal.aborted = true;
+            for (const fn of this.signal._listeners) {
+                try { fn(); } catch {}
+            }
+        }
+    };
+}
 
 // ─── State tests ────────────────────────────────────────────────
 
@@ -320,6 +348,26 @@ await runTest("saveCurrentSession updates existing session id", () => {
     assert.equal(history[0].id, sessionId);
     assert.equal(history[0].messages.length, 3);
     assert.equal(stateModule.state.currentSessionId, sessionId);
+});
+
+// ─── Abort/cancellation tests (abortActiveRequest) ─────────────
+
+await runTest("abortActiveRequest calls abort() on stored controller and nulls it", () => {
+    stateModule.state.abortController = null;
+    const controller = new globalThis.AbortController();
+    let abortCalled = false;
+    controller.signal.addEventListener("abort", () => { abortCalled = true; });
+    stateModule.state.abortController = controller;
+    stateModule.abortActiveRequest();
+    assert.equal(controller.signal.aborted, true, "controller.abort() should have been called");
+    assert.equal(abortCalled, true, "signal 'abort' event should have fired");
+    assert.equal(stateModule.state.abortController, null, "abortController should be nulled out after abort");
+});
+
+await runTest("abortActiveRequest is a no-op when abortController is null", () => {
+    stateModule.state.abortController = null;
+    assert.doesNotThrow(() => stateModule.abortActiveRequest());
+    assert.equal(stateModule.state.abortController, null, "abortController should remain null");
 });
 
 // ─── UI utility tests ──────────────────────────────────────────

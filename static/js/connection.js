@@ -7,6 +7,7 @@ import { apiCall } from "./api.js";
 import { showToast } from "./ui.js";
 import { renderModelList, syncLoadedModels } from "./models.js";
 import { renderHistoryList } from "./history.js";
+import { cancelAndResetUI } from "./chat.js";
 
 /**
  * Connect to the configured endpoint.
@@ -77,6 +78,12 @@ export async function connect(dom) {
  * @param {Object} dom - DOM element references.
  */
 export function disconnect(dom) {
+    // Cancel any active in-flight chat request and reset the streaming UI
+    // before tearing down connection state, so the stop button and
+    // "Generating..." indicator don't linger on the disconnected view while
+    // the aborted fetch settles.
+    cancelAndResetUI(dom);
+
     stopHeartbeat();
 
     state.connected = false;

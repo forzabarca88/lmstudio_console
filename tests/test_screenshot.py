@@ -31,6 +31,12 @@ BASE_URL = f"http://{SERVER_HOST}:{SERVER_PORT}"
 # Screenshot directory
 SCREENSHOT_DIR = os.path.join(os.path.dirname(__file__), "screenshots")
 
+# Click offset for the send button. A positioned .cursor-indicator overlay
+# (right:16px within .chat-input-wrapper) sits over the right-center of the
+# send button and can intercept pointer events at the button's default center
+# click point. Clicking the left portion of the button reliably avoids it.
+_SEND_BTN_CLICK_POS = {"x": 10, "y": 20}
+
 # DOM object template for passing to frontend functions via page.evaluate()
 DOM_JS = """const dom = {
     endpoint: document.getElementById('endpoint'),
@@ -185,6 +191,103 @@ class TestScreenshot(unittest.TestCase):
                 {js_code}
             }}"""
         )
+
+    def _install_chat_hold_mock(self):
+        """Mock /api/chat so an in-flight chat request stays pending until cancelled.
+
+        Installs two cooperating pieces:
+          * A ``page.route`` handler for /api/chat that fulfills immediately with
+            a minimal SSE response. Fulfilling (rather than leaving the route
+            pending) lets Playwright's route task complete cleanly, avoiding
+            the asyncio "Task was destroyed" / CancelledError noise that a
+            never-fulfilled route would log at teardown.
+          * An in-page fetch wrapper that, for /api/chat, drives the request
+            through the route mock (so /api/chat is mocked via page.route) but
+            returns a promise that only settles when the request's AbortSignal
+            fires. This keeps the caller (apiCallChat -> sendMessage) in-flight
+            until the client cancels, and records the abort in
+            ``window.__chatFetchAborted`` so tests can assert cancellation.
+
+        Callers must ``page.unroute('**/api/chat')`` when done (e.g. in finally).
+        """
+        self.page.route(
+            "**/api/chat",
+            lambda route: route.fulfill(
+                status=200,
+                headers={"Content-Type": "text/event-stream"},
+                body="data: [DONE]\n\n",
+            ),
+        )
+        self.page.evaluate(
+            """() => {
+                window.__chatFetchAborted = false;
+                const origFetch = window.fetch;
+                const makeAbortError = () => {
+                    const err = new Error('The operation was aborted.');
+                    err.name = 'AbortError';
+                    return err;
+                };
+                window.fetch = function(...args) {
+                    const [url, opts] = args;
+                    if (typeof url === 'string' && url === '/api/chat') {
+                        const signal = opts && opts.signal;
+                        // Drive the request through the page.route mock so
+                        // the route handler runs and completes cleanly. The
+                        // response is intentionally discarded; the caller is
+                        // held in-flight by the promise below.
+                        origFetch.apply(this, args).catch(() => {});
+                        return new Promise((resolve, reject) => {
+                            if (!signal) return; // no signal: stay in-flight
+                            if (signal.aborted) {
+                                window.__chatFetchAborted = true;
+                                reject(makeAbortError());
+                                return;
+                            }
+                            signal.addEventListener('abort', () => {
+                                window.__chatFetchAborted = true;
+                                reject(makeAbortError());
+                            });
+                        });
+                    }
+                    return origFetch.apply(this, args);
+                };
+            }"""
+        )
+
+    def _enable_chat_ui_for_test_model(self):
+        """Inject a selected model into state and enable the chat input/buttons.
+
+        Mirrors the setup used by test_send_message_interactive so that
+        sendMessage() proceeds past its early-return guards.
+        """
+        self.page.evaluate(
+            """async () => {
+                const mod = await import('/static/js/state.js');
+                mod.state.selectedModel = 'test-model';
+            }"""
+        )
+        self.page.evaluate(
+            """() => {
+                document.getElementById('chatInput').disabled = false;
+                document.getElementById('sendBtn').disabled = false;
+                const attachBtn = document.getElementById('attachBtn');
+                if (attachBtn) attachBtn.disabled = false;
+                document.getElementById('emptyState').style.display = 'none';
+                document.getElementById('chatHeader').style.display = 'flex';
+                document.getElementById('chatMessages').style.display = 'flex';
+                document.getElementById('chatMetrics').style.display = 'flex';
+            }"""
+        )
+
+    def _click_send_btn(self):
+        """Click the send button at an offset that avoids the cursor-indicator.
+
+        The send button shares its input wrapper with a positioned
+        .cursor-indicator overlay that can intercept pointer events at the
+        button's default center click point (see _SEND_BTN_CLICK_POS). This
+        clicks the left portion of the button, which is always clear.
+        """
+        self.page.locator("#sendBtn").click(position=_SEND_BTN_CLICK_POS)
 
     # --- Visual tests (existing) ---
 
@@ -683,6 +786,127 @@ class TestScreenshot(unittest.TestCase):
         self.assertNotIn("copied", btn_class)
 
         self._screenshot("16_copy_button_interactive")
+
+    # --- Cancellation (stop button) interactive tests ---
+
+    def test_stop_button_interactive(self):
+        """Interactive: Send a message, then click the stop button to cancel.
+
+        Verifies the send button swaps to stop mode during streaming, and that
+        clicking it cancels the in-flight request: the streaming indicator
+        hides, a 'Cancelled' toast appears, the button returns to send mode,
+        and the underlying /api/chat fetch is aborted.
+        """
+        self._navigate()
+        self._enable_chat_ui_for_test_model()
+        self._install_chat_hold_mock()
+
+        try:
+            # Type a message and click send
+            self.page.fill("#chatInput", "Hello, please respond slowly")
+            self._click_send_btn()
+
+            # Once streaming starts, the send button should be in stop mode
+            self.page.wait_for_selector(
+                "#streamingIndicator", state="visible", timeout=10000
+            )
+            self.assertTrue(
+                self.page.locator("#sendBtn").evaluate(
+                    "el => el.classList.contains('stop-mode')"
+                ),
+                "Send button should have stop-mode class during streaming",
+            )
+            self.assertFalse(
+                self.page.evaluate("() => window.__chatFetchAborted === true"),
+                "Fetch should still be in-flight before cancel",
+            )
+
+            # Click the send button again (now in stop mode) to trigger cancel
+            self._click_send_btn()
+
+            # Streaming indicator should hide
+            self.page.wait_for_selector(
+                "#streamingIndicator", state="hidden", timeout=10000
+            )
+
+            # A 'Cancelled' toast should appear (info toast)
+            self.page.wait_for_selector(
+                ".toast.info:has-text('Cancelled')", timeout=10000
+            )
+            self.assertIn(
+                "Cancelled", self.page.locator(".toast.info").first.text_content()
+            )
+
+            # Send button should return to send mode (no stop-mode class)
+            self.assertFalse(
+                self.page.locator("#sendBtn").evaluate(
+                    "el => el.classList.contains('stop-mode')"
+                ),
+                "Send button should return to send mode after cancel",
+            )
+
+            # The in-flight fetch should have been aborted (signal abort fired)
+            self.assertTrue(
+                self.page.evaluate("() => window.__chatFetchAborted === true"),
+                "The in-flight /api/chat fetch should have been aborted",
+            )
+
+            self._screenshot("17_stop_button_interactive")
+        finally:
+            self.page.unroute("**/api/chat")
+
+    def test_new_chat_cancels_request(self):
+        """Interactive: Starting a new chat aborts an in-flight request.
+
+        While a chat request is hung in-flight (mocked /api/chat), clicking New
+        Chat should abort the underlying fetch. Verified via the in-page abort
+        flag set when the mocked fetch's AbortSignal fires, plus the chat area
+        being cleared and a 'Chat cleared' toast.
+        """
+        self._navigate()
+        self._enable_chat_ui_for_test_model()
+        self._install_chat_hold_mock()
+
+        try:
+            # Start a send (the fetch will hang in-flight)
+            self.page.fill("#chatInput", "Hello, this request should be cancelled")
+            self._click_send_btn()
+
+            # Confirm the request is in-flight
+            self.page.wait_for_selector(
+                "#streamingIndicator", state="visible", timeout=10000
+            )
+            self.assertFalse(
+                self.page.evaluate("() => window.__chatFetchAborted === true"),
+                "Fetch should still be in-flight before new chat",
+            )
+
+            # Click New Chat — this should abort the in-flight request
+            self.page.click("#newChatBtn")
+
+            # Assert the stuck fetch was aborted (signal abort fired)
+            self.page.wait_for_function(
+                "() => window.__chatFetchAborted === true", timeout=10000
+            )
+            self.assertTrue(
+                self.page.evaluate("() => window.__chatFetchAborted === true"),
+                "New chat should abort the in-flight /api/chat fetch",
+            )
+
+            # Streaming indicator should be hidden after new chat
+            self.assertTrue(self.page.locator("#streamingIndicator").is_hidden())
+
+            # Chat area should be cleared
+            self.assertEqual(self.page.locator("#chatMessages").inner_html(), "")
+
+            # New Chat toast ('Chat cleared') should appear
+            self.page.wait_for_selector(
+                ".toast.info:has-text('Chat cleared')", timeout=10000
+            )
+
+            self._screenshot("18_new_chat_cancels_request")
+        finally:
+            self.page.unroute("**/api/chat")
 
 
 if __name__ == "__main__":

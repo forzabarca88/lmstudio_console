@@ -5,7 +5,7 @@
 import { state, saveSettings, loadSettings, saveSessionHistory } from "./state.js";
 import { connect, disconnect } from "./connection.js";
 import { refreshModels, loadModel, unloadModel } from "./models.js";
-import { sendMessage, newChat, clearAttachments, renderAttachmentPreview } from "./chat.js";
+import { sendMessage, newChat, clearAttachments, renderAttachmentPreview, cancelRequest } from "./chat.js";
 import { renderHistoryList, continueSession, deleteSession } from "./history.js";
 import { showToast, autoResizeInput, updateMetrics } from "./ui.js";
 
@@ -134,7 +134,7 @@ dom.chatInput.addEventListener("keydown", (e) => {
 
 dom.chatInput.addEventListener("input", () => autoResizeInput(dom.chatInput));
 
-dom.sendBtn.addEventListener("click", () => sendMessage(dom));
+dom.sendBtn.addEventListener("click", () => { if (state.streaming) { cancelRequest(dom) } else { sendMessage(dom) } });
 dom.newChatBtn.addEventListener("click", () => newChat(dom));
 
 // Attachment helpers

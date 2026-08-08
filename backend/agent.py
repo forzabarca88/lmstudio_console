@@ -10,6 +10,7 @@ to Pydantic AI's internal format and runs the agent.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from typing import Any, AsyncIterable
@@ -197,6 +198,7 @@ class ChatAgent:
         temperature: float = 0.7,
         system_prompt: str = "",
         tool_call_enabled: bool = False,
+        cancel_event: asyncio.Event | None = None,
     ) -> AsyncIterable[str]:
         """Stream chat response with optional tool calls.
 
@@ -212,6 +214,9 @@ class ChatAgent:
             temperature: Sampling temperature.
             system_prompt: System prompt (prepended to messages).
             tool_call_enabled: Whether to enable tool calls.
+            cancel_event: Optional asyncio.Event; when set during streaming,
+                the stream is cancelled and a {"__cancelled__": True} payload
+                is emitted instead of usage stats.
 
         Yields:
             Text deltas as they are generated, followed by usage metadata.
@@ -266,8 +271,15 @@ class ChatAgent:
         saw_thinking = False
         pending_tool_calls: dict[str, dict] = {}
         prev_text: str = ""
+        cancelled = False
 
         try:
+            # If already cancelled before starting, emit and stop without
+            # sending a request to the model.
+            if cancel_event and cancel_event.is_set():
+                yield {"__cancelled__": True}
+                return
+
             async with agent.run_stream(
                 user_prompt=None,
                 message_history=pai_messages,
@@ -329,23 +341,38 @@ class ChatAgent:
                                 if delta:
                                     yield {"content": delta}
 
-                # Emit thinking_done at end of stream if thinking was seen
-                if saw_thinking:
-                    yield {"thinking_done": True}
+                    # Check for cancellation after each response batch.
+                    # Breaking here exits the async for; the async with
+                    # __aexit__ then cancels the underlying HTTP stream.
+                    if cancel_event and cancel_event.is_set():
+                        cancelled = True
+                        break
 
-                # Handle orphaned tool calls (tool was called but result never arrived)
-                for tc_id, tc_info in pending_tool_calls.items():
-                    log.warning(
-                        f"ORPHANED_TOOL_CALL id={tc_id} name={tc_info['name']}"
-                    )
-                    yield {
-                        "tool_result": {
-                            "tool_call_id": tc_id,
-                            "name": tc_info["name"],
-                            "status": "error",
-                            "result": "Tool execution did not complete",
+                if not cancelled:
+                    # Emit thinking_done at end of stream if thinking was seen
+                    if saw_thinking:
+                        yield {"thinking_done": True}
+
+                    # Handle orphaned tool calls (tool was called but result never arrived)
+                    for tc_id, tc_info in pending_tool_calls.items():
+                        log.warning(
+                            f"ORPHANED_TOOL_CALL id={tc_id} name={tc_info['name']}"
+                        )
+                        yield {
+                            "tool_result": {
+                                "tool_call_id": tc_id,
+                                "name": tc_info["name"],
+                                "status": "error",
+                                "result": "Tool execution did not complete",
+                            }
                         }
-                    }
+
+            # Exiting the async with block via break triggers __aexit__, which
+            # cancels the upstream HTTP stream. Emit a cancellation marker so
+            # the frontend can distinguish cancellation from errors.
+            if cancelled:
+                yield {"__cancelled__": True}
+                return
 
             # Log usage
             usage = result.usage

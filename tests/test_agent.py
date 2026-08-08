@@ -513,6 +513,79 @@ class TestChatAgentStreaming(unittest.TestCase):
 
         asyncio.run(_run())
 
+    def test_chat_cancels_on_event(self):
+        """ARRANGE: ChatAgent with mocked stream that yields several parts,
+                     and an asyncio.Event set after the first part is yielded
+        ACT: Run chat with cancel_event
+        ASSERT: Loop breaks early, __cancelled__ payload emitted, fewer content
+               payloads than the full stream would produce"""
+        agent = ChatAgent("http://localhost:1234")
+
+        async def _run():
+            collected = []
+            cancel_event = asyncio.Event()
+            full_part_count = 4  # total parts the mock would yield if uninterrupted
+            yield_count = {"n": 0}
+
+            with patch("backend.agent.Agent") as mock_cls:
+                mock_agent = MagicMock()
+                mock_result = MagicMock()
+                mock_result.usage = MagicMock(
+                    input_tokens=10, output_tokens=5, total_tokens=15
+                )
+
+                async def mock_stream_iter(debounce_by=0.05):
+                    for i in range(full_part_count):
+                        yield_count["n"] += 1
+                        yield ModelResponse(parts=[TextPart(content=f"chunk{i}")])
+                        # Set the cancel event after the first part is yielded.
+                        if yield_count["n"] == 1:
+                            cancel_event.set()
+                        # Let the event loop tick so the cancellation check
+                        # (which runs after each response batch) takes effect.
+                        await asyncio.sleep(0)
+
+                mock_result.stream_response = mock_stream_iter
+                mock_cm = MagicMock()
+                mock_cm.__aenter__ = AsyncMock(return_value=mock_result)
+                mock_cm.__aexit__ = AsyncMock(return_value=False)
+                mock_agent.run_stream = MagicMock(return_value=mock_cm)
+                mock_cls.return_value = mock_agent
+
+                async for payload in agent.chat(
+                    model="test-model",
+                    messages=[{"role": "user", "content": "Hi"}],
+                    tool_call_enabled=False,
+                    cancel_event=cancel_event,
+                ):
+                    collected.append(payload)
+
+            # The first response batch is yielded as a content delta.
+            content_payloads = [c for c in collected if "content" in c]
+            self.assertGreaterEqual(len(content_payloads), 1)
+
+            # A __cancelled__ payload must be emitted.
+            cancelled = [c for c in collected if c.get("__cancelled__")]
+            self.assertEqual(len(cancelled), 1)
+
+            # No usage metadata is emitted on cancellation.
+            usage = [c for c in collected if "__usage__" in c]
+            self.assertEqual(len(usage), 0)
+
+            # The stream broke early: fewer content payloads than the full
+            # stream would have produced.
+            self.assertLess(len(content_payloads), full_part_count)
+
+            # The underlying iterator was not fully consumed.
+            self.assertLess(yield_count["n"], full_part_count)
+
+            # The run_stream context manager's __aexit__ was triggered by the
+            # break, which is what calls close_stream() on the upstream HTTP
+            # connection — verifying upstream endpoint cancellation fires.
+            mock_cm.__aexit__.assert_called_once()
+
+        asyncio.run(_run())
+
 
 if __name__ == "__main__":
     unittest.main()

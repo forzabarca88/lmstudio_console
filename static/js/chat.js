@@ -6,7 +6,7 @@
  * The frontend only sends chat requests and receives clean text streams.
  */
 
-import { state, saveSettings, saveCurrentSession, saveSessionHistory } from "./state.js";
+import { state, saveSettings, saveCurrentSession, saveSessionHistory, abortActiveRequest } from "./state.js";
 import { apiCallChat, apiCall } from "./api.js";
 import { showToast, scrollToBottom, autoResizeInput, updateMetrics } from "./ui.js";
 import { renderHistoryList } from "./history.js";
@@ -23,10 +23,81 @@ try {
 }
 
 /**
+ * SVG markup for the stop (filled square) icon used in stop mode.
+ */
+const STOP_ICON_SVG =
+    '<svg viewBox="0 0 24 24" fill="currentColor" stroke="none" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><rect x="6" y="6" width="12" height="12" rx="2"></rect></svg>';
+
+/**
+ * Default send icon, used if the original button markup was not captured.
+ */
+const SEND_ICON_SVG =
+    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"></line><polygon points="22 2 15 22 9 22 22 2"></polygon></svg>';
+
+/**
+ * Captured original innerHTML of the send button, used to restore the send
+ * icon after stop mode. Module-level so cancelRequest() can also restore it.
+ */
+let _originalSendBtnHTML = null;
+
+/**
+ * Swap the send button into "stop mode": add the stop-mode class, swap the SVG
+ * icon to a filled square, and keep the button enabled so the user can click
+ * it to cancel. Prefers the dedicated #sendBtnIcon element if present
+ * (re-queried to avoid stale references), otherwise swaps the button's SVG.
+ * @param {Object} dom - DOM element references.
+ */
+function enterStopMode(dom) {
+    dom.sendBtn.classList.add("stop-mode");
+    dom.sendBtn.disabled = false; // keep enabled so the user can click to cancel
+    const iconEl = document.getElementById("sendBtnIcon") || dom.sendBtn.querySelector("svg");
+    if (iconEl) {
+        iconEl.outerHTML = STOP_ICON_SVG;
+    } else {
+        dom.sendBtn.innerHTML = STOP_ICON_SVG;
+    }
+}
+
+/**
+ * Restore the send button to "send mode": remove the stop-mode class, restore
+ * the original SVG icon, and (unless skipDisabled) re-enable based on model
+ * selection.
+ *
+ * skipDisabled is passed as true by sendMessage's finally block when the
+ * exit was a navigation abort: in that case the navigation handler owns the
+ * disabled state, and deriving it from !state.selectedModel here would
+ * clobber it (race where Continue targets an unloaded model B: this would
+ * re-enable the button because B is truthy, undoing Continue's
+ * hasLoadedModel-based disable).
+ * @param {Object} dom - DOM element references.
+ * @param {string|null} originalHTML - The original button innerHTML to restore.
+ * @param {boolean} [skipDisabled=false] - When true, leave the button's
+ *   disabled state untouched so a navigation handler can own it.
+ */
+function restoreSendMode(dom, originalHTML, skipDisabled = false) {
+    dom.sendBtn.classList.remove("stop-mode");
+    dom.sendBtn.innerHTML = originalHTML && originalHTML.length > 0 ? originalHTML : SEND_ICON_SVG;
+    if (!skipDisabled) {
+        dom.sendBtn.disabled = !state.selectedModel;
+    }
+}
+
+/**
  * Start a new chat session (clear history).
  * @param {Object} dom - DOM element references.
  */
 export function newChat(dom) {
+    // Cancel any in-flight request and reset the streaming UI before
+    // clearing state, so the backend stream is torn down server-side and
+    // the stop button / "Generating..." indicator don't linger on the
+    // cleared view while the aborted fetch settles. Matches
+    // continueSession / disconnect, which also use cancelAndResetUI.
+    // cancelAndResetUI leaves state.streaming true (it only aborts the
+    // fetch), so state.streaming stays true until the aborted
+    // sendMessage's finally runs — keeping the entry guard blocking
+    // re-entrant sends during the settle window.
+    cancelAndResetUI(dom);
+
     // Save current session before clearing
     if (state.chatMessages.length > 0) {
         saveCurrentSession();
@@ -35,7 +106,9 @@ export function newChat(dom) {
 
     state.chatMessages = [];
     state.currentSessionId = null;
-    state.streaming = false;
+    // Note: state.streaming is intentionally NOT reset here. See the
+    // cancelAndResetUI note above — resetting it would re-open a window
+    // for re-entrant sendMessage calls while the aborted request settles.
     state.attachments = [];
     state.metrics = { tokensPerSecond: 0, timeToFirstToken: null, totalTokens: 0 };
     dom.chatMessages.innerHTML = "";
@@ -108,15 +181,19 @@ export function renderAttachmentPreview(dom) {
 /**
  * Upload a file to the backend for processing.
  * @param {File} file - File to upload
+ * @param {AbortSignal} [signal] - Optional AbortSignal to cancel the in-flight
+ *   upload so the stop button can abort multi-file uploads, not just the
+ *   subsequent /api/chat fetch.
  * @returns {Promise<Object>} Upload result with base64 content
  */
-async function uploadFile(file) {
+async function uploadFile(file, signal = undefined) {
     const formData = new FormData();
     formData.append("file", file);
 
     const response = await fetch("/api/upload", {
         method: "POST",
         body: formData,
+        signal,
     });
 
     if (!response.ok) {
@@ -174,42 +251,40 @@ export async function sendMessage(dom) {
     // Atomic guard: set immediately and disable input to prevent race
     state.streaming = true;
     dom.chatInput.disabled = true;
-    dom.sendBtn.disabled = true;
+    // Swap the send button into "stop mode" (still enabled) so the user can
+    // cancel the in-flight request. Track the controller so cancelRequest()
+    // and navigation paths (newChat/continueSession/disconnect) can abort
+    // the underlying fetch.
+    const controller = new AbortController();
+    state.abortController = controller;
+    _originalSendBtnHTML = dom.sendBtn.innerHTML;
+    enterStopMode(dom);
     if (dom.attachBtn) dom.attachBtn.disabled = true;
     dom.chatInput.value = "";
     autoResizeInput(dom.chatInput);
 
-    // Upload attachments to get base64 data
+    // W1: Capture the chatMessages array reference as a per-send sentinel
+    // before the fetch. The abort catch block runs asynchronously when the
+    // aborted fetch settles, which can be AFTER a navigation handler
+    // (newChat / continueSession) has replaced state.chatMessages with a
+    // different session's messages (newChat assigns a fresh [] array;
+    // continueSession assigns [...session.messages]). Guarding
+    // preservePartial with this array-identity check prevents the orphaned
+    // partial assistant message from being pushed into the now-different
+    // session and corrupting it. Unlike currentSessionId — which collapses
+    // to null for consecutive new chats, making null === null falsely pass —
+    // the array reference is unique per session load, so this identity check
+    // is robust regardless of session IDs.
+    const sendMessages = state.chatMessages;
+
+    // Tracking variables and helper closures are declared in the function
+    // scope (before the try) so the catch block below can access them. The
+    // try wraps the upload loop too (so an upload abort can `return` early
+    // and still hit the finally for cleanup), which means these can't live
+    // inside it. streamStart / tokenCount / firstTokenTime stay local to the
+    // try since the catch never reads them.
     const currentAttachments = [...state.attachments];
-    for (const att of currentAttachments) {
-        try {
-            const result = await uploadFile(att.file);
-            att.uploaded = true;
-            att.base64 = result.base64;
-            att.mimeType = result.mimeType;
-            att.isImage = result.isImage;
-        } catch (e) {
-            showToast(`Failed to upload ${att.name}: ${e.message}`, "error");
-        }
-    }
-
-    // Build multimodal content
-    const userContent = buildMultimodalContent(text, currentAttachments);
-
-    // Add user message
-    const userMsg = { role: "user", content: userContent };
-    state.chatMessages.push(userMsg);
-
-    // Render user message with attachment indicators
-    appendMessage(dom, userMsg, "user", currentAttachments);
-
-    // Reset metrics for this turn
     const metrics = { tokensPerSecond: 0, timeToFirstToken: null, totalTokens: 0 };
-    const streamStart = Date.now();
-    let tokenCount = 0;
-    let firstTokenTime = null;
-
-    // Thinking token tracking
     let thinkingContent = "";
     let thinkingDone = false;
     let thinkingWrapper = null; // outer <div class="thinking-block">
@@ -217,26 +292,10 @@ export async function sendMessage(dom) {
     let thinkingContentEl = null;
     let thinkingSummaryEl = null;
     let thinkingSeen = false;   // tracks if any thinking events arrived
-
-    // Tool call tracking
     const toolCallMap = new Map(); // tool_call_id -> DOM element
-
-    // Assistant message placeholder
     let assistantEl = null;
     let contentEl = null;
-
-    // Create assistant placeholder immediately so content events have somewhere to render
-    createAssistantPlaceholder();
-
-    // Show streaming indicator with "Thinking..." text
-    if (dom.streamingIndicator) {
-        dom.streamingIndicator.style.display = "flex";
-        if (dom.streamingIndicatorText) {
-            dom.streamingIndicatorText.textContent = "Generating...";
-        }
-        scrollToBottom(dom.chatMessages);
-    }
-    dom.chatMetrics.style.display = "flex";
+    let assistantContent = "";
 
     /**
      * Create the assistant message placeholder.
@@ -374,33 +433,91 @@ export async function sendMessage(dom) {
         scrollToBottom(dom.chatMessages);
     }
 
-    // Build messages array with system prompt
-    const messages = [];
-    if (state.systemPrompt.trim()) {
-        messages.push({ role: "system", content: state.systemPrompt });
-    }
-    messages.push(...state.chatMessages);
-
-    // Build chat request body
-    const body = {
-        model: state.selectedModel,
-        messages: messages,
-        temperature: state.temperature,
-        system_prompt: state.systemPrompt,
-        toolCallEnabled: state.toolCallEnabled,
-    };
-
-    // Clear attachments after sending
-    clearAttachments(dom);
-
     try {
-        const response = await apiCallChat(body);
+        // Upload attachments to get base64 data. The controller.signal is
+        // forwarded to each upload so the stop button (cancelRequest) and
+        // navigation handlers (abortActiveRequest) can abort in-flight
+        // uploads, not just the subsequent /api/chat fetch. On abort we break
+        // out of the loop so remaining files are not uploaded.
+        for (const att of currentAttachments) {
+            try {
+                const result = await uploadFile(att.file, controller.signal);
+                att.uploaded = true;
+                att.base64 = result.base64;
+                att.mimeType = result.mimeType;
+                att.isImage = result.isImage;
+            } catch (e) {
+                if (e && e.name === "AbortError") {
+                    break;
+                }
+                showToast(`Failed to upload ${att.name}: ${e.message}`, "error");
+            }
+        }
+
+        // W2: If the upload was aborted (stop button or navigation), exit
+        // early BEFORE pushing the user message, creating the assistant
+        // placeholder, showing the streaming indicator, or calling
+        // apiCallChat. Otherwise the already-aborted signal would make
+        // apiCallChat reject immediately, leaving a dangling user message
+        // and a UI flash of the placeholder / indicator. The finally block
+        // below still runs for full cleanup (reset streaming, restore the
+        // send button, re-enable the input).
+        if (controller.signal.aborted) return;
+
+        // Build multimodal content
+        const userContent = buildMultimodalContent(text, currentAttachments);
+
+        // Add user message
+        const userMsg = { role: "user", content: userContent };
+        state.chatMessages.push(userMsg);
+
+        // Render user message with attachment indicators
+        appendMessage(dom, userMsg, "user", currentAttachments);
+
+        // Reset per-stream metrics. streamStart / tokenCount / firstTokenTime
+        // are local to the stream and only used within this try.
+        const streamStart = Date.now();
+        let tokenCount = 0;
+        let firstTokenTime = null;
+
+        // Create assistant placeholder immediately so content events have somewhere to render
+        createAssistantPlaceholder();
+
+        // Show streaming indicator with "Thinking..." text
+        if (dom.streamingIndicator) {
+            dom.streamingIndicator.style.display = "flex";
+            if (dom.streamingIndicatorText) {
+                dom.streamingIndicatorText.textContent = "Generating...";
+            }
+            scrollToBottom(dom.chatMessages);
+        }
+        dom.chatMetrics.style.display = "flex";
+
+        // Build messages array with system prompt
+        const messages = [];
+        if (state.systemPrompt.trim()) {
+            messages.push({ role: "system", content: state.systemPrompt });
+        }
+        messages.push(...state.chatMessages);
+
+        // Build chat request body
+        const body = {
+            model: state.selectedModel,
+            messages: messages,
+            temperature: state.temperature,
+            system_prompt: state.systemPrompt,
+            toolCallEnabled: state.toolCallEnabled,
+        };
+
+        // Clear attachments after sending
+        clearAttachments(dom);
+
+        const response = await apiCallChat(body, controller.signal);
 
         // Parse SSE stream from Pydantic AI backend
         const reader = response.body.getReader();
         const decoder = new TextDecoder();
         let buffer = "";
-        let assistantContent = "";
         let streamDone = false;
 
         while (!streamDone) {
@@ -578,38 +695,225 @@ export async function sendMessage(dom) {
         renderHistoryList(dom);
 
     } catch (e) {
-        // Hide streaming indicator on error
+        const isAbort = e && e.name === "AbortError";
+
+        // Hide streaming indicator on any error/abort
         if (dom.streamingIndicator) dom.streamingIndicator.style.display = "none";
 
-        // Clean up thinking block, assistant placeholder, and tool calls on error
-        if (thinkingWrapper) thinkingWrapper.remove();
-        if (assistantEl) assistantEl.remove();
-        for (const [, entry] of toolCallMap) {
-            entry.el.remove();
+        if (isAbort) {
+            // Finalize any pending tool calls that weren't resolved
+            for (const [toolCallId] of toolCallMap) {
+                finalizeToolCall(toolCallId, "done", null);
+            }
+            toolCallMap.clear();
+
+            // Finalize thinking block if stream ended without thinking_done
+            if (!thinkingDone && thinkingSeen && thinkingContent.trim() && thinkingEl) {
+                finalizeThinkingBlock();
+            }
+
+            // Preserve partial content only for stop-button aborts
+            // (cancelRequest), which set state.abortReason = "stop".
+            // Navigation aborts (newChat/continueSession/disconnect via
+            // abortActiveRequest) set state.abortReason = "navigate", so the
+            // partial content is discarded along with the cleared/replaced
+            // chat.
+            //
+            // Additionally guard with the per-send chatMessages sentinel
+            // (sendMessages, captured before the fetch): this catch runs
+            // asynchronously when the aborted fetch settles, which can be
+            // after the user clicked Stop and then immediately clicked
+            // NewChat/Continue (replacing state.chatMessages with a different
+            // array). The identity check state.chatMessages === sendMessages
+            // ensures the array hasn't been replaced by newChat (which assigns
+            // a fresh []) or continueSession (which assigns [...session.messages])
+            // since this send started. Without this guard the orphaned partial
+            // assistant message would be pushed into the now-different session.
+            // Unlike a currentSessionId sentinel — which collapses to null for
+            // consecutive new chats (null === null falsely passes) — the array
+            // reference is unique per session load, so this check is robust.
+            const preservePartial =
+                state.abortReason === "stop" && state.chatMessages === sendMessages;
+
+            if (preservePartial && assistantContent.length > 0) {
+                state.chatMessages.push({ role: "assistant", content: assistantContent });
+                state.metrics = { ...metrics };
+                saveCurrentSession();
+                renderHistoryList(dom);
+            } else {
+                // No partial content to keep, or the chat was replaced: remove
+                // the now-orphaned placeholder elements.
+                if (thinkingWrapper) thinkingWrapper.remove();
+                if (assistantEl) assistantEl.remove();
+            }
+
+            showToast("Cancelled", "info");
+        } else {
+            // Clean up thinking block, assistant placeholder, and tool calls on error
+            if (thinkingWrapper) thinkingWrapper.remove();
+            if (assistantEl) assistantEl.remove();
+            for (const [, entry] of toolCallMap) {
+                entry.el.remove();
+            }
+            toolCallMap.clear();
+
+            // Show error message
+            const errorEl = document.createElement("div");
+            errorEl.className = "message assistant";
+            errorEl.innerHTML = `
+                <div class="message-avatar">AI</div>
+                <div class="message-content">
+                    <div class="message-role">Assistant</div>
+                    <div class="error-message">Error: ${escapeHtml(e.message)}</div>
+                </div>
+            `;
+            dom.chatMessages.appendChild(errorEl);
+            scrollToBottom(dom.chatMessages);
+
+            showToast(`Chat failed: ${e.message}`, "error");
         }
-        toolCallMap.clear();
-
-        // Show error message
-        const errorEl = document.createElement("div");
-        errorEl.className = "message assistant";
-        errorEl.innerHTML = `
-            <div class="message-avatar">AI</div>
-            <div class="message-content">
-                <div class="message-role">Assistant</div>
-                <div class="error-message">Error: ${escapeHtml(e.message)}</div>
-            </div>
-        `;
-        dom.chatMessages.appendChild(errorEl);
-        scrollToBottom(dom.chatMessages);
-
-        showToast(`Chat failed: ${e.message}`, "error");
+    } finally {
+        // Capture whether this exit was triggered by a navigation abort
+        // (newChat/continueSession/disconnect/deleteSession) before clearing
+        // the reason, so we can avoid refocusing the input and re-deriving
+        // the disabled state below.
+        const wasNavigateAbort = state.abortReason === "navigate";
+        // Cleanup on ALL exit paths (success, error, abort)
+        state.abortController = null;
+        state.abortReason = null;
+        // When this exit was triggered by a navigation abort, the navigation
+        // handler has already set the appropriate disabled state (and may
+        // set it again after this finally runs, e.g. newChat runs
+        // synchronously after cancelAndResetUI). Pass wasNavigateAbort so
+        // restoreSendMode skips deriving sendBtn.disabled from
+        // !state.selectedModel — otherwise this finally would clobber the
+        // navigation handler's settings in the race where Continue targets a
+        // session whose model B is NOT loaded: Continue sets disabled=true
+        // (hasLoadedModel=false), then this finally would wrongly re-enable
+        // the button because B is truthy.
+        restoreSendMode(dom, _originalSendBtnHTML, wasNavigateAbort);
+        _originalSendBtnHTML = null;
+        // state.streaming stays true until this finally so the entry guard
+        // blocks re-entrant sendMessage calls while a cancelled request
+        // settles. cancelRequest / cancelAndResetUI only abort the fetch;
+        // this finally owns the streaming reset.
+        state.streaming = false;
+        // For non-navigate exits (normal completion, error, stop-button
+        // abort) derive the input/attach disabled state from the current
+        // model selection and refocus the input. For navigation aborts the
+        // navigation handler owns the disabled state (and focus), so we skip
+        // both to avoid the race where Continue targets an unloaded model B:
+        // Continue sets disabled=true via hasLoadedModel, then this finally
+        // would re-enable controls because B is truthy.
+        if (!wasNavigateAbort) {
+            dom.chatInput.disabled = !state.selectedModel;
+            if (dom.attachBtn) dom.attachBtn.disabled = !state.selectedModel;
+            dom.chatInput.focus();
+        }
     }
+}
 
-    state.streaming = false;
-    dom.chatInput.disabled = false;
-    dom.sendBtn.disabled = false;
-    if (dom.attachBtn) dom.attachBtn.disabled = !state.selectedModel;
-    dom.chatInput.focus();
+/**
+ * Cancel the active in-flight chat request (stop button handler).
+ *
+ * Aborts the fetch via the stored AbortController. The actual content
+ * finalization (preserving partial content, hiding the indicator, showing
+ * the "Cancelled" toast) is handled by sendMessage()'s abort catch block
+ * when the abort propagates. This function defensively hides the indicator
+ * and restores the send button so the UI reflects the cancellation
+ * immediately, even before the abort settles.
+ *
+ * Does NOT clear state.streaming; it stays true until the aborted
+ * request's sendMessage finally runs the full cleanup (streaming = false).
+ * Clearing streaming here would let a new sendMessage start while the old
+ * one settles, and the old finally would clobber the new send's controller
+ * / stop-mode.
+ *
+ * Guards on `state.abortController` before touching anything (mirroring
+ * abortActiveRequest). Without this guard, a cancelRequest call arriving
+ * during the abort-settle window after a navigation abort (when
+ * abortController is already null) would clobber abortReason = "navigate"
+ * with "stop", causing sendMessage's catch to treat it as a stop-button
+ * abort and preserve partial content into an already-cleared chat.
+ *
+ * Sets `state.abortReason = "stop"` before aborting so sendMessage's
+ * catch/finally know to preserve partial content and refocus the input.
+ * Nulls `state.abortController` after aborting (matching abortActiveRequest)
+ * so subsequent cancelRequest / abortActiveRequest calls are clean no-ops.
+ * @param {Object} dom - DOM element references.
+ */
+export function cancelRequest(dom) {
+    // Guard on the controller (mirroring abortActiveRequest): if there is
+    // no in-flight request, this is a no-op. Without this guard a
+    // cancelRequest arriving during the abort-settle window after a
+    // navigation abort would clobber abortReason = "navigate" with "stop"
+    // and sendMessage's catch would preserve partial content into an
+    // already-cleared chat.
+    if (!state.abortController) return;
+    state.abortReason = "stop";
+    state.abortController.abort();
+    state.abortController = null;
+    if (dom.streamingIndicator) dom.streamingIndicator.style.display = "none";
+    restoreSendMode(dom, _originalSendBtnHTML);
+    if (dom.chatInput) dom.chatInput.disabled = false;
+}
+
+/**
+ * Cancel the active in-flight chat request and immediately reset the
+ * streaming UI to a non-streaming state.
+ *
+ * Used by navigation handlers (newChat, continueSession, disconnect,
+ * deleteSession) that need to tear down an active stream synchronously
+ * rather than waiting for sendMessage's deferred finally block. Without
+ * this, there is a visible window where the red pulsing stop button and
+ * "Generating..." indicator remain on the restored/disconnected view
+ * until the aborted fetch settles.
+ *
+ * - If no stream is active and the button is not in stop mode, returns
+ *   immediately WITHOUT aborting, so a no-op call (e.g. clicking Continue
+ *   / Disconnect while idle) does not leave a stale abortReason =
+ *   "navigate" behind (which would make a later normal completion skip
+ *   refocusing).
+ * - Otherwise aborts the fetch via abortActiveRequest() (which sets
+ *   state.abortReason = "navigate" only when a controller exists, so
+ *   sendMessage's catch/finally discard partial content and skip
+ *   refocusing).
+ * - Does NOT clear state.streaming; it stays true until the aborted
+ *   request's sendMessage finally runs the full cleanup (streaming =
+ *   false). Clearing streaming here would let a new sendMessage start
+ *   while the old one settles, and the old finally would clobber the new
+ *   send's controller / stop-mode.
+ * - Hides the streaming indicator.
+ * - Restores the send button to send mode (only when currently in stop
+ *   mode, to avoid disturbing the #sendBtnIcon element when no stream is
+ *   active).
+ * - Sets the chat input disabled state based on the current model
+ *   selection (disabled when no model is selected).
+ *
+ * Does NOT null _originalSendBtnHTML; sendMessage's finally owns that so it
+ * can re-run restoreSendMode idempotently.
+ * @param {Object} dom - DOM element references.
+ */
+export function cancelAndResetUI(dom) {
+    // If no stream is active and the button is not in stop mode, there is
+    // nothing to reset. Check this BEFORE aborting so a no-op call (e.g.
+    // clicking Continue / Disconnect while idle) does not set a stale
+    // abortReason = "navigate" via abortActiveRequest. Also avoids calling
+    // restoreSendMode with a null original (which would replace the
+    // #sendBtnIcon element with the fallback SVG, losing the id needed by
+    // enterStopMode).
+    if (!state.streaming && !(dom.sendBtn && dom.sendBtn.classList.contains("stop-mode"))) {
+        return;
+    }
+    // Abort the in-flight fetch (sets abortReason = "navigate" only when a
+    // controller exists). sendMessage's catch/finally will discard partial
+    // content and skip refocusing accordingly. state.streaming is
+    // intentionally left true so the entry guard blocks re-entrant sends
+    // until the aborted request's finally runs the full cleanup.
+    abortActiveRequest();
+    if (dom.streamingIndicator) dom.streamingIndicator.style.display = "none";
+    restoreSendMode(dom, _originalSendBtnHTML);
+    if (dom.chatInput) dom.chatInput.disabled = !state.selectedModel;
 }
 
 /**

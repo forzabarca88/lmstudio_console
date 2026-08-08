@@ -1,5 +1,6 @@
 """Proxy service that forwards requests to LM Studio / OpenAI-compatible endpoints."""
 
+import asyncio
 import json
 import time
 from typing import AsyncIterable, Optional
@@ -186,4 +187,15 @@ async def proxy_stream_iter(
     except httpx.TimeoutException as e:
         duration = time.monotonic() - start_time
         trace_logger.log_error(trace, e, duration)
+        raise
+
+    except asyncio.CancelledError:
+        # The consumer abandoned the stream (client disconnect or task
+        # cancellation). The `async with client.stream(...)` block above
+        # already closed the upstream connection via __aexit__ while the
+        # exception unwound, so the connection is released cleanly. Record
+        # the cancellation on the trace for observability, then re-raise to
+        # preserve asyncio cancellation semantics.
+        duration = time.monotonic() - start_time
+        trace_logger.log_cancelled(trace, duration)
         raise

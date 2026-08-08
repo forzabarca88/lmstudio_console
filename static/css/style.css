@@ -798,6 +798,30 @@ input[type="range"] {
     height: 18px;
 }
 
+/* Stop mode: send button transforms into a cancel control while a request streams.
+   The button must stay fully interactive (full opacity) even if a disabled
+   attribute briefly lingers during the stop/handoff transition. */
+.send-btn.stop-mode {
+    background: var(--danger);
+    box-shadow: 0 0 12px var(--danger-glow);
+    animation: stopPulse 1.4s ease-in-out infinite;
+}
+
+.send-btn.stop-mode:hover {
+    background: #f87171;
+}
+
+.send-btn.stop-mode:disabled {
+    opacity: 1;
+    cursor: pointer;
+    box-shadow: 0 0 12px var(--danger-glow);
+}
+
+@keyframes stopPulse {
+    0%, 100% { box-shadow: 0 0 12px var(--danger-glow); }
+    50% { box-shadow: 0 0 22px rgba(239, 68, 68, 0.5); }
+}
+
 .input-hint {
     font-family: var(--font-mono);
     font-size: 0.58rem;

@@ -22,6 +22,7 @@ import sys
 import json
 import io
 import base64
+import asyncio
 from unittest.mock import patch, MagicMock, AsyncMock, AsyncMock as AsyncMockType
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
@@ -758,6 +759,203 @@ class TestSessionManagement(unittest.TestCase):
             self.assertEqual(resp.status_code, 200)
             content = resp.content.decode()
             self.assertIn('"content": "That image shows a cat."', content)
+
+
+class TestChatCancellation(unittest.TestCase):
+    """Backend cancellation on client disconnect.
+
+    `request.is_disconnected()` does not fire reliably under FastAPI's
+    TestClient (the ASGI `http.disconnect` message is only sent after the
+    request body is fully read and the response completes). To exercise the
+    server's cancellation wiring deterministically, we patch
+    `starlette.requests.Request.is_disconnected` to flip to True after a
+    few polling calls and then close the streaming client response
+    mid-stream (exiting the `with` block). Closing the client response
+    abandons the server's generator, which surfaces as `GeneratorExit`
+    inside the mocked upstream generator.
+    """
+
+    def setUp(self):
+        self.client = TestClient(server.app)
+
+    def test_chat_generator_abandoned_on_client_close(self):
+        """ARRANGE: Mock ChatAgent.chat to yield content then sleep; patch
+                   is_disconnected to return True after a few polls
+        ACT: POST /api/chat and close the streaming response mid-stream
+        ASSERT: The mocked chat generator is abandoned (GeneratorExit) and
+               not fully consumed.
+
+        This verifies the GeneratorExit path when the client closes the
+        response mid-stream. The cooperative-cancel path (where the agent
+        observes cancel_event and emits a __cancelled__ marker) is covered
+        by test_chat_cooperative_cancel_emits_marker below, and the agent's
+        own cooperative cancellation is unit-tested in test_agent.py
+        (test_chat_cancels_on_event)."""
+        state = {"yields": 0, "fully_consumed": False, "abandoned": False}
+
+        async def mock_chat_generator():
+            try:
+                for i in range(10):
+                    state["yields"] += 1
+                    yield {"content": f"chunk{i}"}
+                    await asyncio.sleep(0.05)
+                state["fully_consumed"] = True
+            except GeneratorExit:
+                state["abandoned"] = True
+                raise
+
+        poll_count = {"n": 0}
+
+        async def fake_is_disconnected(self):
+            poll_count["n"] += 1
+            return poll_count["n"] > 1
+
+        import starlette.requests as starlette_requests
+
+        with patch.object(starlette_requests.Request, "is_disconnected", fake_is_disconnected), \
+                patch.object(server.ChatAgent, "chat", MagicMock(return_value=mock_chat_generator())):
+            with self.client.stream("POST", "/api/chat", json={
+                "model": "test-model",
+                "messages": [{"role": "user", "content": "Hi"}],
+            }) as resp:
+                received = []
+                for line in resp.iter_lines():
+                    if line:
+                        received.append(line)
+                    if any("chunk1" in line for line in received):
+                        break
+
+        # The mocked chat generator was abandoned mid-stream.
+        self.assertTrue(state["abandoned"],
+                        "chat generator was not abandoned on disconnect")
+        self.assertFalse(state["fully_consumed"],
+                        "chat generator was fully consumed despite disconnect")
+        # We received at least one content chunk before disconnecting.
+        self.assertTrue(any("content" in line for line in received),
+                        "no content received before disconnect")
+        # The disconnect watcher polled is_disconnected at least once.
+        self.assertGreater(poll_count["n"], 0)
+
+    def test_chat_cooperative_cancel_emits_marker(self):
+        """ARRANGE: Mock ChatAgent.chat to cooperatively cancel (emit
+                   __cancelled__ and return) when the cancel_event passed by
+                   the server is set; patch is_disconnected to return True
+                   after a few polls so the server's watcher sets cancel_event
+        ACT: POST /api/chat and read the SSE stream
+        ASSERT: The SSE stream contains a __cancelled__ marker line, proving
+               the cooperative-cancel path emits the marker that lets the
+               frontend distinguish cancellation from a normal end or error."""
+        captured = {"cancel_event": None}
+
+        def mock_chat(**kwargs):
+            # Capture the cancel_event the server passes so the generator can
+            # observe it. MagicMock(side_effect=...) forwards the call kwargs.
+            captured["cancel_event"] = kwargs.get("cancel_event")
+
+            async def gen():
+                for i in range(20):
+                    yield {"content": f"chunk{i}"}
+                    await asyncio.sleep(0.05)
+                    ce = captured["cancel_event"]
+                    if ce is not None and ce.is_set():
+                        yield {"__cancelled__": True}
+                        return
+                yield {
+                    "__usage__": {
+                        "prompt_tokens": 5,
+                        "completion_tokens": 5,
+                        "total_tokens": 10,
+                    }
+                }
+
+            return gen()
+
+        poll_count = {"n": 0}
+
+        async def fake_is_disconnected(self):
+            poll_count["n"] += 1
+            return poll_count["n"] > 1
+
+        import starlette.requests as starlette_requests
+
+        with patch.object(starlette_requests.Request, "is_disconnected", fake_is_disconnected), \
+                patch.object(server.ChatAgent, "chat", MagicMock(side_effect=mock_chat)):
+            with self.client.stream("POST", "/api/chat", json={
+                "model": "test-model",
+                "messages": [{"role": "user", "content": "Hi"}],
+            }) as resp:
+                received = []
+                for line in resp.iter_lines():
+                    if line:
+                        received.append(line)
+                    if any("__cancelled__" in line for line in received):
+                        break
+
+        # The SSE stream must contain a __cancelled__ marker line.
+        self.assertTrue(
+            any("__cancelled__" in line and "data:" in line for line in received),
+            f"no __cancelled__ SSE line in stream: {received}",
+        )
+        # The server wired the cancel_event through to agent.chat.
+        self.assertIsNotNone(captured["cancel_event"],
+                        "cancel_event was not passed to agent.chat")
+        self.assertTrue(captured["cancel_event"].is_set(),
+                        "cancel_event was not set by the disconnect watcher")
+        # The disconnect watcher actually polled is_disconnected.
+        self.assertGreater(poll_count["n"], 0)
+
+    def test_proxy_stream_disconnect_aborts(self):
+        """ARRANGE: Patch proxy_stream_iter with a generator that sleeps and
+                   records whether it was fully consumed; patch is_disconnected
+                   to return True after a few polls
+        ACT: POST a streaming proxy request and close the response mid-stream
+        ASSERT: The upstream generator was abandoned (GeneratorExit) and not
+               fully consumed"""
+        state = {"yields": 0, "fully_consumed": False, "abandoned": False}
+
+        async def mock_proxy_iter(*args, **kwargs):
+            try:
+                for i in range(10):
+                    state["yields"] += 1
+                    yield b'data: {"choices":[{"delta":{"content":"chunk%d"}}]}\n\n' % i
+                    await asyncio.sleep(0.05)
+                state["fully_consumed"] = True
+            except GeneratorExit:
+                state["abandoned"] = True
+                raise
+
+        poll_count = {"n": 0}
+
+        async def fake_is_disconnected(self):
+            poll_count["n"] += 1
+            return poll_count["n"] > 1
+
+        import starlette.requests as starlette_requests
+
+        with patch.object(starlette_requests.Request, "is_disconnected", fake_is_disconnected), \
+                patch("backend.server.proxy_stream_iter", mock_proxy_iter):
+            with self.client.stream("POST", "/proxy/v1/chat/completions", json={
+                "model": "test-model",
+                "messages": [{"role": "user", "content": "Hi"}],
+                "stream": True,
+            }) as resp:
+                received = []
+                for line in resp.iter_lines():
+                    if line:
+                        received.append(line)
+                    if any("chunk1" in line for line in received):
+                        break
+
+        # The upstream generator was abandoned mid-stream.
+        self.assertTrue(state["abandoned"],
+                        "proxy generator was not abandoned on disconnect")
+        self.assertFalse(state["fully_consumed"],
+                        "proxy generator was fully consumed despite disconnect")
+        # We received at least one chunk before disconnecting.
+        self.assertTrue(any("chunk0" in line for line in received),
+                        "no stream content received before disconnect")
+        # The disconnect check ran at least once.
+        self.assertGreater(poll_count["n"], 0)
 
 
 class TestErrorHandling(unittest.TestCase):

@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
+import logging
 from contextlib import asynccontextmanager
 from typing import AsyncIterable, Optional
 
@@ -16,6 +18,8 @@ from backend.config import get_host, get_port, get_lm_studio_url, get_static_dir
 from backend.proxy import proxy_request, proxy_stream_iter, close_client, trace_logger
 from backend.agent import ChatAgent
 from backend.tools import get_tool_schemas, execute_tool
+
+logger = logging.getLogger(__name__)
 
 # Hop-by-hop headers that must not be forwarded from upstream responses.
 # JSONResponse computes its own Content-Length; forwarding the upstream value
@@ -130,6 +134,32 @@ async def _proxy_buffered_request(
         return _handle_proxy_error(method, path, target_url, e)
 
 
+# Polling interval for client disconnect detection in streaming endpoints.
+_DISCONNECT_POLL_INTERVAL = 0.1
+
+
+async def _watch_disconnect(request: Request, cancel_event: asyncio.Event) -> None:
+    """Poll the request for client disconnect and set cancel_event when detected.
+
+    Starlette exposes no push-based disconnect notification, so we poll
+    `request.is_disconnected()` at a short interval until the client
+    disconnects or the event is set externally (which exits the loop).
+    """
+    while not cancel_event.is_set():
+        try:
+            disconnected = await request.is_disconnected()
+        except Exception as e:
+            # If disconnect detection fails transiently, keep polling rather
+            # than tearing down the stream spuriously. Log at debug level so
+            # failures are not silently swallowed but also don't spam logs.
+            logger.debug("Disconnect poll failed: %s", e)
+            disconnected = False
+        if disconnected:
+            cancel_event.set()
+            return
+        await asyncio.sleep(_DISCONNECT_POLL_INTERVAL)
+
+
 # --- Routes ---
 
 @app.get("/")
@@ -184,7 +214,7 @@ async def proxy_post(request: Request, path: str):
     is_stream = "chat/completions" in path and body.get("stream", False)
 
     if is_stream:
-        return await _proxy_stream_response(path, target_url, body, headers)
+        return await _proxy_stream_response(request, path, target_url, body, headers)
 
     # Model load/unload operations can take minutes
     op_timeout = _MODEL_OP_TIMEOUT if "models/load" in path or "models/unload" in path else None
@@ -193,15 +223,23 @@ async def proxy_post(request: Request, path: str):
 
 
 async def _proxy_stream_response(
+    request: Request,
     path: str,
     target_url: str,
     body: dict,
     headers: Optional[dict],
 ) -> StreamingResponse:
-    """Return a streaming SSE response proxied from the backend."""
+    """Return a streaming SSE response proxied from the backend.
+
+    Stops early if the downstream client disconnects; breaking out of the
+    upstream iterator closes the proxied connection via proxy_stream_iter's
+    cleanup.
+    """
     async def event_generator() -> AsyncIterable[str]:
         try:
             async for chunk in proxy_stream_iter("POST", f"/{path}", body=body, headers=headers, target_url=target_url):
+                if await request.is_disconnected():
+                    break
                 yield chunk.decode("utf-8", errors="replace")
         except (httpx.ConnectError, httpx.TimeoutException) as e:
             trace_logger.log_server_error("POST", path, e)
@@ -253,19 +291,47 @@ async def chat_endpoint(request: Request):
     # Create agent for this request
     agent = ChatAgent(base_url=target_url, api_key=api_token)
 
+    # Set when the client disconnects; the agent's stream loop checks this and
+    # exits cleanly, cancelling the upstream HTTP stream via run_stream's
+    # __aexit__. This is the cooperative-cancellation channel between the
+    # disconnect watcher and the agent.
+    cancel_event = asyncio.Event()
+
     async def chat_generator() -> AsyncIterable[str]:
+        # Watch for client disconnect in the background and signal cancellation.
+        watcher = asyncio.create_task(_watch_disconnect(request, cancel_event))
         try:
+            cancelled_emitted = False
             async for payload in agent.chat(
                 model=model,
                 messages=messages,
                 temperature=temperature,
                 system_prompt=system_prompt,
                 tool_call_enabled=tool_call_enabled,
+                cancel_event=cancel_event,
             ):
                 yield f"data: {json.dumps(payload)}\n\n"
+                if isinstance(payload, dict) and payload.get("__cancelled__"):
+                    cancelled_emitted = True
+                # If the client has disconnected (cancel_event set), stop pulling
+                # from the agent. Emit a cancellation marker unless the agent
+                # already emitted one, so the frontend can distinguish
+                # cancellation from a normal end or error.
+                if cancel_event.is_set():
+                    if not cancelled_emitted:
+                        yield f'data: {json.dumps({"__cancelled__": True})}\n\n'
+                    break
         except Exception as e:
             trace_logger.log_server_error("POST", "/api/chat", e)
             yield f"data: {json.dumps({'__error__': str(e)})}\n\n"
+        finally:
+            # Stop the disconnect watcher and await its cleanup so we don't
+            # leak a background task after the response completes or cancels.
+            watcher.cancel()
+            try:
+                await watcher
+            except asyncio.CancelledError:
+                pass
 
     return StreamingResponse(
         chat_generator(),

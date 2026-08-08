@@ -69,14 +69,16 @@ export async function apiCallStream(path, method, body) {
  * Make a chat request to the Pydantic AI backend endpoint.
  * The backend handles tool calls automatically; frontend receives clean text stream.
  * @param {Object} body - Chat request body with model, messages, temperature, etc.
+ * @param {AbortSignal} [signal] - Optional AbortSignal to cancel the in-flight request.
  * @returns {Promise<Response>} Raw fetch Response for SSE parsing
  */
-export async function apiCallChat(body) {
+export async function apiCallChat(body, signal = undefined) {
     const headers = _buildHeaders();
     const response = await fetch("/api/chat", {
         method: "POST",
         headers,
         body: JSON.stringify(body),
+        signal,
     });
 
     if (!response.ok) {

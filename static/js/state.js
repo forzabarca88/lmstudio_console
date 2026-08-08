@@ -29,6 +29,13 @@ export const state = {
     currentSessionId: null,
     // Heartbeat
     heartbeatInterval: null,
+    // Active request cancellation (runtime only, never persisted)
+    abortController: null,
+    // Why the active request was aborted: "stop" (stop button) or "navigate"
+    // (new chat / continue session / disconnect). Used by sendMessage's
+    // catch/finally to decide whether to preserve partial content and
+    // whether to refocus the input. Cleared in sendMessage's finally.
+    abortReason: null,
     // Agentic tools
     toolCallEnabled: false,
     // File attachments for multimodal messages
@@ -97,6 +104,35 @@ export function loadSessionHistory() {
     } catch {
         state.sessionHistory = [];
     }
+}
+
+/**
+ * Abort the active in-flight request, if any.
+ *
+ * This only cancels the client-side fetch via the stored AbortController. It
+ * intentionally does NOT touch `state.streaming`; the normal `sendMessage`
+ * cleanup path is responsible for resetting streaming state once the aborted
+ * fetch settles. `abortController` is runtime state and is never persisted.
+ *
+ * Sets `state.abortReason = "navigate"` ONLY when there is an in-flight
+ * request (abortController non-null), so sendMessage's catch/finally can
+ * distinguish navigation-driven aborts (new chat / continue session /
+ * disconnect) from stop-button aborts (cancelRequest sets "stop") and discard
+ * partial content / skip refocusing accordingly. When called while idle
+ * (abortController null) this is a no-op and leaves abortReason untouched,
+ * avoiding a stale "navigate" flag that would make a later normal
+ * completion skip refocusing the input.
+ */
+export function abortActiveRequest() {
+    // Only flag a navigation abort when there is actually an in-flight
+    // request to abort. Setting abortReason unconditionally (even when
+    // abortController is null) leaves a stale "navigate" flag behind; a
+    // subsequent normal completion's finally would misread it as a
+    // navigation abort and skip refocusing the input.
+    if (!state.abortController) return;
+    state.abortReason = "navigate";
+    state.abortController.abort();
+    state.abortController = null;
 }
 
 /**
