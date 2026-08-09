@@ -43,6 +43,21 @@ LM_CONSOLE_PORT=9090 LM_STUDIO_URL=http://localhost:1234 uv run python run.py
 
 Open `http://localhost:8080` in your browser.
 
+## Docker
+
+Build and run a minimal production image (Python 3.12 + uv):
+
+```bash
+docker build -t lmstudio-console .
+
+# Point LM_STUDIO_URL at the host's LM Studio (use host.docker.internal on Docker Desktop)
+docker run -d -p 8080:8080 \
+  -e LM_STUDIO_URL=http://192.168.0.5:1234 \
+  --name lmstudio-console lmstudio-console
+```
+
+The app runs as a non-root user; configure ports/URLs via the same environment variables as above.
+
 ## Configuration
 
 | Environment Variable | Default | Description |

@@ -1,0 +1,22 @@
+# Version control
+.git
+.gitignore
+
+# Dependencies (resolved fresh in the image)
+.venv
+node_modules
+
+# Tests & caches
+tests
+.pytest_cache
+__pycache__
+*.py[cod]
+.coverage
+htmlcov
+
+# Local docs/config
+README.md
+AGENTS.md
+SPEC.md
+package.json
+package-lock.json

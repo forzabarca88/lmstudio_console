@@ -46,9 +46,11 @@
 │   ├── test_js_runtime.js   # Node.js runtime tests: state management (defaults, persist, restore, session save with cap, abortActiveRequest), UI utilities, session lifecycle (continue, delete, error handling)
 │   ├── test_js_syntax.py    # Syntax validation tests for all JavaScript modules (Node.js --check and reserved word scanning)
 │   └── test_screenshot.py   # Playwright tests: visual rendering (page layout, panels, elements) and interactive behavioral tests (connect, send message, new chat, settings toggle, model load/unload, copy button, stop button, new chat cancels request)
+├── .dockerignore            # Build context exclusions for the Docker image
 ├── .pytest_cache/
 │   └── README.md            # pytest cache directory marker
 ├── AGENTS.md                # Project guidelines and documentation
+├── Dockerfile               # Minimal production Docker image (Python 3.12 + uv, non-root user)
 ├── README.md                # Project overview, features, usage, and configuration
 ├── SPEC.md                  # Technical requirements and minimum test cases
 ├── pyproject.toml           # Python project configuration with dependencies
