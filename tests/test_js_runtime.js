@@ -188,6 +188,38 @@ await runTest("state exists with defaults", () => {
     assert.deepEqual(s.attachments, []);
 });
 
+await runTest("generateUuid falls back without crypto.randomUUID", () => {
+    // Simulate an insecure context (plain-HTTP remote deployment) where
+    // crypto.randomUUID is not a function.
+    const originalCrypto = globalThis.crypto;
+    let bytesSeed = 0;
+    Object.defineProperty(globalThis, 'crypto', {
+        value: { getRandomValues: (arr) => { for (let i = 0; i < arr.length; i++) arr[i] = (bytesSeed + i) & 0xff; bytesSeed++; } },
+        writable: true,
+        configurable: true,
+    });
+    try {
+        const id = stateModule.generateUuid();
+        assert.match(id, /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+        assert.notEqual(id, stateModule.generateUuid());
+    } finally {
+        Object.defineProperty(globalThis, 'crypto', { value: originalCrypto, writable: true, configurable: true });
+    }
+});
+
+await runTest("generateUuid works with no crypto at all", () => {
+    // Final fallback tier: crypto entirely unavailable (very exotic
+    // embedder). generateUuid() must still produce a valid UUID.
+    const originalCrypto = globalThis.crypto;
+    Object.defineProperty(globalThis, 'crypto', { value: undefined, writable: true, configurable: true });
+    try {
+        const id = stateModule.generateUuid();
+        assert.match(id, /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+    } finally {
+        Object.defineProperty(globalThis, 'crypto', { value: originalCrypto, writable: true, configurable: true });
+    }
+});
+
 await runTest("saveSettings persists to localStorage", () => {
     globalThis.localStorage.clear();
     stateModule.state.endpoint = "http://test:9999";

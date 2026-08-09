@@ -58,6 +58,42 @@ export function saveSettings() {
 }
 
 /**
+ * Generate a UUID v4 string.
+ *
+ * Prefers crypto.randomUUID(), but falls back to crypto.getRandomValues()
+ * (available in insecure contexts) and finally Math.random(). This is
+ * required because crypto.randomUUID() is only exposed in secure contexts
+ * (HTTPS or localhost) — on plain-HTTP remote deployments it is undefined
+ * and calling it throws "crypto.randomUUID is not a function".
+ */
+export function generateUuid() {
+    if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+        return crypto.randomUUID();
+    }
+    const bytes = new Uint8Array(16);
+    try {
+        if (typeof crypto !== "undefined" && typeof crypto.getRandomValues === "function") {
+            // Conforming browsers fill `bytes` in place and return it; some
+            // polyfills return a new array instead. Handle both.
+            const filled = crypto.getRandomValues(bytes);
+            if (filled !== bytes && filled && filled.length >= 16) {
+                for (let i = 0; i < 16; i++) bytes[i] = filled[i];
+            }
+        } else {
+            for (let i = 0; i < 16; i++) bytes[i] = Math.floor(Math.random() * 256);
+        }
+    } catch {
+        // getRandomValues may throw in exotic embedders (broken polyfill,
+        // entropy exhaustion); fall through to Math.random.
+        for (let i = 0; i < 16; i++) bytes[i] = Math.floor(Math.random() * 256);
+    }
+    bytes[6] = (bytes[6] & 0x0f) | 0x40; // version 4
+    bytes[8] = (bytes[8] & 0x3f) | 0x80; // variant 10
+    const hex = Array.from(bytes, b => b.toString(16).padStart(2, "0")).join("");
+    return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
+
+/**
  * Save current chat as a session in history.
  */
 export function saveCurrentSession() {
@@ -76,7 +112,7 @@ export function saveCurrentSession() {
     }
 
     const session = {
-        id: state.currentSessionId || crypto.randomUUID(),
+        id: state.currentSessionId || generateUuid(),
         createdAt: new Date().toISOString(),
         model: state.selectedModel || null,
         messages: [...state.chatMessages],
