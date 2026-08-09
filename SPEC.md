@@ -16,6 +16,7 @@ The interface must be modern and responsive, with striking design.
 - Use `FastAPI`.
 - Use `Pydantic AI`.
 - Use `uv` instead of Python calls.
+- Create a minimal `Dockerfile` for production deployment.
 
 ### Frontend
 
