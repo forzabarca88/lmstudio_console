@@ -39,12 +39,14 @@ The interface must be modern and responsive, with striking design.
 - Allow tweaking of System Prompt and Temperature for chat.
 - Save last used details (e.g. endpoint, model, system prompt, etc) if the user closes the browser.
 - Trace logging of all requests shown on the server side console.
+- A collapsable section in the UI which also displays the live trace logging of the application to the user if expanded.
 - Show metrics for the current chat such as tokens per seconds, time taken for first token, and total tokens.
 - Chat session history should be saved for atleast the last 10 sessions. Allow the user to `Delete` or `Continue` chat sessions saved in history.
 - A `Copy` button for each chat response which allows the user to copy the message to their clipboard.
 - Responses can render graphs using `Mermaid JS`.
 - The button used for sending messages should also double as a stop button for cancelling the current request. Creating a new chat should also implicitly cancel any current in-progress requests. Note that it is **critical** that the request(s) are cancelled on the server/endpoint side, not just on the client/UI side.
 - Allow user to attach files, this is important for multimodal models supporting vision, audio, etc.
+- `3` UI templates/designs which the user can toggle between - the user's preference must be saved so that the template is used for their future sessions. The design language of the templates **must** be very different from each other, and the implementation must be modular and elegant so that more templates can be added in future.
 - Add toggles to allow the user to use agentic functions such as tool calls
 - Required tools:
     - `Web search` tool call so the LLM can search the web.
@@ -61,7 +63,8 @@ The interface must be modern and responsive, with striking design.
 - UI `Connected` status should update automatically if the endpoint becomes unavailable at any point while connected.
 - When an LLM is thinking, show feedback on the UI. Also allow the thinking content to be expanded to show the thinking tokens streamed in realtime.
 - Pressing CTRL + C for the server-side process must kill all connections and stop the server (force stop after 5 seconds).
-- 
+- UI must have `responsive` design which works across a wide range of screen sizes such as large monitors, laptops, tablets, or mobile phones.
+- UI elements other than the core chat window where the user sends and receives messages, should all be collapsable or be able to be hidden.
 
 ### Minimum Test Cases
 
@@ -78,6 +81,10 @@ Assume that following refers to front-end (browser) and back-end (server) testin
 - Load a previous session from history and continue sending a message within that session. Verify that a response is received.
 - Verify that saved sessions can be deleted.
 - Toggle web search for the session so that the LLM can use the web search tool call.
+- Verify trace logs are being shown in the UI.
+- Toggle between all templates and verify they look as expected.
+- Resize the application window and validate that UI elements are resized, displayed, and work correctly.
+- Collapse and expand (or hide/unhide) all UI sections which have this feature, and verify that the UI remains a good user experience.
 
 ## Reference
 
