@@ -39,6 +39,7 @@ body {
     background:
         radial-gradient(ellipse at 20% 0%, var(--accent-glow) 0%, transparent 50%),
         var(--bg-base);
+    transition: flex 0.25s ease;
 }
 
 /* ═══════════════════════════════════════════
@@ -951,13 +952,77 @@ input[type="range"] {
         min-height: 0;
     }
 
-    .sidebar.collapsed {
-        max-height: 44px;
-        overflow: hidden;
-    }
-
     .sidebar-toggle {
         display: flex;
+        position: static;
+        width: 100%;
+        height: auto;
+        transform: none;
+        border-radius: 0;
+        border-top: 1px solid var(--border);
+        border-right: 1px solid var(--border);
+        padding: 8px;
+        font-size: 0.7rem;
+        gap: 6px;
+    }
+
+    /* Restore text label on mobile */
+    .sidebar-toggle > span:first-child {
+        display: inline;
+    }
+
+    /* Mobile collapsed: collapse height, keep full width */
+    .sidebar.collapsed {
+        width: 100%;
+        min-width: 100%;
+        max-height: 44px;
+        overflow: hidden;
+        border-right: none;
+        border-bottom: 1px solid var(--border);
+        transition: max-height 0.25s ease;
+    }
+
+    /* On mobile collapsed, hide content but keep toggle visible */
+    .sidebar.collapsed > .sidebar-header,
+    .sidebar.collapsed > .section,
+    .sidebar.collapsed > .history-toggle,
+    .sidebar.collapsed > .history-panel,
+    .sidebar.collapsed > .settings-toggle,
+    .sidebar.collapsed > .settings-panel,
+    .sidebar.collapsed > .section-toggle,
+    .sidebar.collapsed > .collapsible,
+    .sidebar.collapsed > .status-bar {
+        opacity: 0;
+        pointer-events: none;
+        transition: opacity 0.25s ease;
+    }
+
+    .sidebar.collapsed > .sidebar-toggle {
+        opacity: 1;
+        pointer-events: auto;
+        position: static;
+        width: 100%;
+        height: auto;
+        transform: none;
+        border-radius: 0;
+        border-top: 1px solid var(--border);
+        border-right: 1px solid var(--border);
+        padding: 8px;
+        font-size: 0.7rem;
+        gap: 6px;
+    }
+
+    .sidebar.collapsed > .sidebar-toggle > span:first-child {
+        display: inline;
+    }
+
+    /* On mobile, chevron rotates when collapsed */
+    .sidebar-chevron {
+        transition: transform 0.2s;
+    }
+
+    .sidebar.collapsed .sidebar-chevron {
+        transform: rotate(180deg);
     }
 
     .chat-messages { padding: 16px; }
@@ -965,19 +1030,77 @@ input[type="range"] {
     .chat-header { padding: 12px 16px; }
 }
 
+/* Desktop sidebar toggle — chevron button on the right edge of the sidebar.
+   Positioned absolutely so it stays visible even when the sidebar collapses. */
 .sidebar-toggle {
-    display: none;
-    width: 100%;
-    padding: 8px;
+    position: absolute;
+    right: 0;
+    top: 50%;
+    transform: translateY(-50%);
+    width: 20px;
+    height: 40px;
     background: var(--bg-surface);
-    border: none;
-    border-top: 1px solid var(--border);
-    color: var(--text-secondary);
-    font-family: var(--font-mono);
-    font-size: 0.7rem;
+    border: 1px solid var(--border);
+    border-right: none;
+    border-radius: 4px 0 0 4px;
+    color: var(--text-muted);
+    font-size: 0.6rem;
     cursor: pointer;
+    display: flex;
+    align-items: center;
     justify-content: center;
-    gap: 6px;
+    transition: all 0.15s;
+    z-index: 10;
+    padding: 0;
+}
+
+.sidebar-toggle:hover {
+    background: var(--bg-elevated);
+    color: var(--text-primary);
+}
+
+/* Hide text label on desktop — chevron icon only */
+.sidebar-toggle > span:first-child {
+    display: none;
+}
+
+/* Chevron rotation: ◀ (expanded) → ▶ (collapsed) */
+.sidebar-chevron {
+    transition: transform 0.2s;
+}
+
+.sidebar.collapsed .sidebar-chevron {
+    transform: rotate(180deg);
+}
+
+/* Desktop sidebar collapsed state — content hidden, toggle tab remains */
+.sidebar.collapsed {
+    width: 20px;
+    min-width: 20px;
+    overflow: hidden;
+    border-right: none;
+    transition: width 0.25s ease, min-width 0.25s ease;
+}
+
+/* Hide all direct children of the sidebar when collapsed */
+.sidebar.collapsed > .sidebar-header,
+.sidebar.collapsed > .section,
+.sidebar.collapsed > .history-toggle,
+.sidebar.collapsed > .history-panel,
+.sidebar.collapsed > .settings-toggle,
+.sidebar.collapsed > .settings-panel,
+.sidebar.collapsed > .section-toggle,
+.sidebar.collapsed > .collapsible,
+.sidebar.collapsed > .status-bar {
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.25s ease;
+}
+
+/* Keep the toggle button visible and interactive when collapsed */
+.sidebar.collapsed > .sidebar-toggle {
+    opacity: 1;
+    pointer-events: auto;
 }
 
 /* ═══════════════════════════════════════════
@@ -1430,12 +1553,12 @@ input[type="range"] {
 
 .trace-entry {
     font-family: var(--font-mono);
-    font-size: 0.6rem;
-    line-height: 1.45;
-    padding: 3px 6px;
+    font-size: 0.8rem;
+    line-height: 1.6;
+    padding: 4px 8px;
     border-radius: 3px;
     display: flex;
-    gap: 6px;
+    gap: 8px;
     align-items: baseline;
     white-space: nowrap;
     overflow: hidden;
@@ -1444,13 +1567,14 @@ input[type="range"] {
 
 .trace-timestamp {
     color: var(--text-muted);
+    font-size: 0.7rem;
     flex-shrink: 0;
 }
 
 .trace-level {
-    font-size: 0.52rem;
+    font-size: 0.7rem;
     font-weight: 600;
-    padding: 1px 5px;
+    padding: 2px 6px;
     border-radius: 3px;
     text-transform: uppercase;
     letter-spacing: 0.04em;
@@ -1484,7 +1608,7 @@ input[type="range"] {
 }
 
 .trace-warning .trace-level {
-    background: rgba(249, 115, 22, 0.12);
+    background: var(--trace-warning-bg, rgba(249, 115, 22, 0.12));
     color: var(--coral);
     border: 1px solid var(--coral-border);
 }
@@ -1493,7 +1617,7 @@ input[type="range"] {
 }
 
 .trace-error .trace-level {
-    background: var(--danger-soft-alpha);
+    background: var(--trace-error-bg, var(--danger-soft-alpha));
     color: var(--danger);
     border: 1px solid var(--danger-glow);
 }
@@ -1513,15 +1637,15 @@ input[type="range"] {
 
 .trace-controls {
     display: flex;
-    gap: 6px;
-    padding: 8px 12px;
+    gap: 8px;
+    padding: 10px 14px;
     background: var(--bg-panel);
 }
 
 .trace-controls button {
     font-family: var(--font-mono);
-    font-size: 0.6rem;
-    padding: 4px 10px;
+    font-size: 0.72rem;
+    padding: 5px 12px;
     border: 1px solid var(--border);
     border-radius: 4px;
     background: var(--bg-surface);

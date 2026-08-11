@@ -185,7 +185,7 @@ window.removeAttachment = function(index) {
     renderAttachmentPreview(dom);
 };
 
-// Mobile sidebar toggle
+// Sidebar toggle (desktop: collapse/expand width; mobile: collapse/expand height)
 dom.sidebarToggle.addEventListener("click", () => {
     dom.sidebar.classList.toggle("collapsed");
 });

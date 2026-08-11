@@ -23,19 +23,19 @@
 │   ├── log_streamer.py      # SSE log streamer: ring buffer (500 entries), subscriber broadcast for live trace log streaming
 │   ├── proxy.py             # HTTP proxy using httpx for forwarding requests to LM Studio/OpenAI endpoints with streaming and graceful cancellation support
 │   ├── server.py            # FastAPI app with proxy routes, chat endpoint (client disconnect detection, cooperative cancellation), tool endpoints, file upload, trace log SSE, and CORS middleware
-│   ├── agent.py             # Pydantic AI Agent wrapper for chat with automatic tool call handling, tool_call_id-based results, thinking tokens, message format conversion, and cooperative cancellation support
+│   ├── agent.py             # Pydantic AI Agent wrapper for chat with automatic tool call handling (Pydantic AI internal tool loop), tool_call/tool_result SSE events, thinking tokens, message format conversion, and cooperative cancellation support
 │   └── tools.py             # Pydantic AI tool definitions (web_search, open_web_page, run_python_code) with OpenAI-compatible schema generation
 ├── static/
 │   ├── css/
 │   │   ├── base.css         # Structural/layout rules (theme-agnostic): reset, layout, sidebar, chat, forms, buttons, components
-│   │   ├── theme-cyberpunk.css  # Dark theme: deep slate + electric violet palette
-│   │   ├── theme-light.css      # Light Professional theme: white/off-white + teal accent
-│   │   └── theme-warm.css       # Warm Minimal theme: warm cream + burnt orange accent
+│   │   ├── theme-cyberpunk.css  # Cyberpunk Dark: deep slate + electric violet palette; neon glow effects
+│   │   ├── theme-light.css      # Light Professional: sharp/corporate — tight spacing, 3px radius, flat, no glow
+│   │   └── theme-warm.css       # Warm Minimal: rounded/editorial — 16px+ radius, dashed borders, cream palette
 │   ├── favicon.svg          # Browser tab icon
 │   ├── js/
 │   │   ├── api.js           # API call utilities for proxy requests, streaming, and chat endpoint with optional AbortSignal forwarding
-│   │   ├── app.js           # Main entry point wiring all modules together; send button toggles between send and stop/cancel; trace log panel wiring
-│   │   ├── chat.js          # Chat: send messages, streaming responses, thinking blocks, tool call tracking by tool_call_id, metrics, file attachments (abortable), copy button, stop/cancel button with partial-content preservation
+│   │   ├── app.js           # Main entry point wiring all modules together; send button toggles between send and stop/cancel; collapsible sidebar toggle; trace log panel wiring
+│   │   ├── chat.js          # Chat: send messages, streaming responses, thinking blocks, tool call display (executing + done/error via SSE events), metrics, file attachments (abortable), copy button, stop/cancel button with partial-content preservation
 │   │   ├── connection.js    # Connection management: connect/disconnect (aborts active requests), status updates, heartbeat monitoring
 │   │   ├── history.js       # Chat session history: render, continue (aborts active requests), delete sessions (aborts if current)
 │   │   ├── models.js        # Model management: list, refresh, load, unload models with LM Studio native API
@@ -80,3 +80,15 @@ When working with Pydantic AI's `stream_response()` in `backend/agent.py` and th
 - **`TextPart.content`** — full accumulated text in Pydantic AI, but the backend converts it to incremental deltas before emitting `content` SSE events. Frontend **accumulates** with `+=`.
 
 The backend tracks `prev_text` to compute deltas from `TextPart` full text, so each SSE `content` event carries only new text. This enables accurate token counting for metrics.
+
+### Tool Call Streaming
+
+Pydantic AI's `stream_response()` yields both `ToolCallPart` and `ToolReturnPart` events. The backend (`agent.py`) uses a single `async with agent.run_stream()` context manager kept open for the entire session, letting Pydantic AI handle the tool call loop internally. When a `ToolCallPart` is detected, the backend emits a `tool_call` (executing) SSE event and tracks it in `pending_tool_calls`. When a `ToolReturnPart` arrives, the backend emits a `tool_result` (done/error) SSE event and removes it from the tracking dict. Orphaned tool calls (tool was called but result never arrived) emit error events at stream end. The frontend (`chat.js`) renders tool call UI elements and updates status in real-time.
+
+### Sidebar Collapse
+
+The sidebar is collapsible on all screen sizes. On desktop, a chevron tab on the right edge toggles collapse (sidebar narrows to 20px, content hidden). On mobile, a full-width toggle button at the bottom of the sidebar collapses content vertically. CSS transitions animate both states.
+
+### Trace Log Readability
+
+Trace log entries use readable font sizes: entries at 0.8rem (11.2px), level badges at 0.7rem (9.8px), and control buttons at 0.72rem (10.1px). This ensures the live trace panel is legible at normal reading distance.

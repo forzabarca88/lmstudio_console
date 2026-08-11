@@ -78,4 +78,8 @@
     /* Utility colors */
     --color-white: #fff;
     --shadow-color: rgba(0, 0, 0, 0.4);
+
+    /* Trace log backgrounds — adapted for dark theme */
+    --trace-warning-bg: rgba(249, 115, 22, 0.15);
+    --trace-error-bg: rgba(239, 68, 68, 0.12);
 }

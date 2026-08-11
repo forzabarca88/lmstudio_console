@@ -14,15 +14,16 @@ Remote web management dashboard and chat interface for LM Studio.
 - **Stop Button**: Send button toggles to stop button during streaming; cancels requests on both client and server/endpoint side
 - **Session History**: Last 10 chat sessions saved; continue or delete from history (both cancel active requests)
 - **Connection Monitoring**: Automatic disconnection detection via heartbeat ping
+- **Collapsible Sidebar**: Collapsible on all screen sizes — chevron tab on desktop, full-width toggle on mobile
 - **Persistent Chat**: Chat messages preserved across model changes and disconnects
 - **Settings**: Configurable system prompt and temperature
 - **Persistence**: Settings saved to localStorage between sessions
 - **Trace Logging**: Detailed request/response logging on the server console
-- **Live Trace Log**: Collapsible panel showing real-time server logs streamed via SSE
-- **UI Themes**: 3 toggleable themes (Cyberpunk Dark, Light Professional, Warm Minimal) with persistent preference
+- **Live Trace Log**: Collapsible panel showing real-time server logs streamed via SSE (readable font sizes)
+- **UI Themes**: 3 toggleable themes with very different design languages — Cyberpunk Dark (neon glow, electric violet), Light Professional (sharp/corporate, tight spacing, flat), Warm Minimal (rounded/editorial, dashed borders, cream palette) — with persistent preference
 - **File Attachments**: Upload images, audio, documents for multimodal models
-- **Agentic Tools**: Toggle tool calls (web search, open web page, run python code) for LLM-agentic behavior
-- **Tool Call Feedback**: Real-time UI feedback showing tool name, arguments, and execution status
+- **Agentic Tools**: Toggle tool calls (web search, open web page, run python code) for LLM-agentic behavior; Pydantic AI handles tool execution internally with SSE events streamed to frontend
+- **Tool Call Display**: Real-time feedback in chat window showing tool name, arguments, and execution status (executing → done/error) with distinct visual states
 - **Pydantic AI**: Backend tool definitions and execution powered by Pydantic AI
 - **Thinking Tokens**: Expandable thinking blocks shown when the model produces reasoning tokens
 - **Graceful Shutdown**: Ctrl+C stops server cleanly with 5-second force-stop timeout
@@ -78,25 +79,25 @@ The app runs as a non-root user; configure ports/URLs via the same environment v
 │   ├── log_streamer.py # SSE broadcaster for trace log entries (ring buffer, subscriber broadcast)
 │   ├── proxy.py       # HTTP proxy using httpx for forwarding requests to LM Studio/OpenAI endpoints with streaming and graceful cancellation support
 │   ├── server.py      # FastAPI app with proxy routes, chat endpoint (client disconnect detection, cooperative cancellation), tool endpoints, file upload, trace log SSE, and CORS middleware
-│   ├── agent.py       # Pydantic AI Agent wrapper for chat with automatic tool call handling, tool_call_id-based results, thinking tokens, message format conversion, and cooperative cancellation support
+│   ├── agent.py       # Pydantic AI Agent wrapper for chat with automatic tool call handling (Pydantic AI internal tool loop), SSE tool_call/tool_result events, thinking tokens, message format conversion, and cooperative cancellation support
 │   └── tools.py       # Pydantic AI tool definitions (web_search, open_web_page, run_python_code) with OpenAI-compatible schema generation
 ├── static/
 │   ├── css/
-│   │   ├── base.css         # Structural/layout CSS (theme-agnostic)
-│   │   ├── theme-cyberpunk.css  # Dark cyberpunk theme variables
-│   │   ├── theme-light.css      # Light professional theme variables
-│   │   └── theme-warm.css       # Warm minimal theme variables
+│   │   ├── base.css         # Structural/layout CSS (theme-agnostic): desktop sidebar collapse, readable trace log fonts
+│   │   ├── theme-cyberpunk.css  # Dark theme: neon glow, electric violet palette
+│   │   ├── theme-light.css      # Light Professional: sharp/corporate — tight spacing, 3px radius, flat, no glow
+│   │   └── theme-warm.css       # Warm Minimal: rounded/editorial — 16px+ radius, dashed borders, cream palette
 │   ├── js/
 │   │   ├── api.js     # API call utilities
-│   │   ├── app.js     # Main entry point
-│   │   ├── chat.js    # Chat + metrics + mermaid + attachments + thinking tokens + tool call feedback
+│   │   ├── app.js     # Main entry point; collapsible sidebar toggle
+│   │   ├── chat.js    # Chat + metrics + mermaid + attachments + thinking tokens + tool call display (executing/done/error via SSE)
 │   │   ├── connection.js  # Connection management + heartbeat
 │   │   ├── history.js # Chat session history
 │   │   ├── models.js  # Model management
 │   │   ├── state.js   # State & localStorage
 │   │   ├── trace.js   # SSE client for live trace log streaming
 │   │   └── ui.js      # UI utilities + metrics display
-│   └── index.html     # Page structure
+│   └── index.html     # Page structure with collapsible sidebar (chevron tab on desktop, toggle on mobile)
 ├── tests/
 │   ├── __init__.py
 │   ├── test_backend.py
