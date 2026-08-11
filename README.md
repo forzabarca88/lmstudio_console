@@ -1,5 +1,7 @@
 # LM Studio Console
 
+> ⚠️ This was a personal project primarily implemented with generative AI. Please review code accordingly before re-use.
+
 Remote web management dashboard and chat interface for LM Studio.
 
 ## Features
