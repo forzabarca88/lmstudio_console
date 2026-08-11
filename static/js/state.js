@@ -36,6 +36,8 @@ export const state = {
     // catch/finally to decide whether to preserve partial content and
     // whether to refocus the input. Cleared in sendMessage's finally.
     abortReason: null,
+    // Theme
+    theme: "cyberpunk",
     // Agentic tools
     toolCallEnabled: false,
     // File attachments for multimodal messages
@@ -53,6 +55,7 @@ export function saveSettings() {
         temperature: state.temperature,
         selectedModel: state.selectedModel,
         toolCallEnabled: state.toolCallEnabled,
+        theme: state.theme,
     };
     localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings));
 }
@@ -212,9 +215,47 @@ export function loadSettings(dom) {
                     dom.toolCallToggle.checked = saved.toolCallEnabled;
                 }
             }
+            if (saved.theme) {
+                state.theme = saved.theme;
+            }
         }
     } catch (e) {
         // Ignore parse errors from corrupt localStorage
     }
     loadSessionHistory();
+}
+
+/**
+ * Theme-to-mermaid mapping.
+ */
+const MERMAID_THEMES = {
+    cyberpunk: "dark",
+    light: "default",
+    warm: "neutral",
+};
+
+/**
+ * Apply a UI theme: swap stylesheet, update state, persist, and reinit mermaid.
+ * @param {string} themeName - Theme key: "cyberpunk", "light", or "warm".
+ */
+export function applyTheme(themeName) {
+    if (!themeName) return;
+    state.theme = themeName;
+
+    // Swap the theme stylesheet
+    const link = document.getElementById("theme-stylesheet");
+    if (link) {
+        link.href = `/static/css/theme-${themeName}.css`;
+    }
+
+    // Persist
+    saveSettings();
+
+    // Reinitialize mermaid with matching theme
+    if (typeof mermaid !== "undefined") {
+        mermaid.initialize({ theme: MERMAID_THEMES[themeName] || "dark" });
+    }
+
+    // Dispatch custom event for other modules
+    window.dispatchEvent(new CustomEvent("themechanged", { detail: { theme: themeName } }));
 }

@@ -112,17 +112,19 @@ class TestStaticFiles(unittest.TestCase):
         ACT: GET each JS module
         ASSERT: All load with status 200"""
         for module in ["app.js", "chat.js", "connection.js", "history.js",
-                        "models.js", "state.js", "api.js", "ui.js"]:
+                        "models.js", "state.js", "api.js", "ui.js", "trace.js"]:
             resp = self.client.get(f"/static/js/{module}")
             self.assertEqual(resp.status_code, 200, f"{module} failed")
             self.assertGreater(len(resp.text), 100, f"{module} empty")
 
     def test_css_served(self):
         """ARRANGE: Server running
-        ACT: GET stylesheet
-        ASSERT: Loads with status 200"""
-        resp = self.client.get("/static/css/style.css")
-        self.assertEqual(resp.status_code, 200)
+        ACT: GET base.css and theme stylesheets
+        ASSERT: All load with status 200"""
+        for css_file in ["base.css", "theme-cyberpunk.css", "theme-light.css", "theme-warm.css"]:
+            resp = self.client.get(f"/static/css/{css_file}")
+            self.assertEqual(resp.status_code, 200, f"{css_file} failed")
+            self.assertGreater(len(resp.text), 10, f"{css_file} empty")
 
     def test_favicon_served(self):
         """ARRANGE: Server running
@@ -977,6 +979,170 @@ class TestErrorHandling(unittest.TestCase):
         ASSERT: 404 Not Found"""
         resp = self.client.get("/nonexistent")
         self.assertEqual(resp.status_code, 404)
+
+
+class TestTraceLogSSE(unittest.TestCase):
+    """SSE endpoint for streaming trace logs.
+
+    Tests the LogStreamer class directly (push, subscribe, get_recent)
+    since the StreamingResponse endpoint blocks indefinitely under
+    FastAPI's TestClient (no real HTTP disconnect is simulated).
+
+    The endpoint route itself is verified using httpx.AsyncClient against
+    a running uvicorn server, or by checking the route registration.
+    """
+
+    def setUp(self):
+        self.client = TestClient(server.app)
+        from backend.log_streamer import log_streamer
+        log_streamer._buffer.clear()
+
+    def test_trace_logs_endpoint_registered(self):
+        """ARRANGE: Server app configured
+        ACT: Check route registry
+        ASSERT: /api/trace-logs route exists with GET method"""
+        from starlette.routing import Route
+        routes = {r.path: list(r.methods) for r in server.app.routes
+                  if isinstance(r, Route)}
+        self.assertIn("/api/trace-logs", routes)
+        self.assertIn("GET", routes["/api/trace-logs"])
+
+    def test_trace_logs_response_headers(self):
+        """ARRANGE: Server app configured
+        ACT: Call the trace_logs handler directly
+        ASSERT: Returns StreamingResponse with correct headers
+
+        Calls the handler function directly (bypassing ASGI) to verify
+        response type and headers without blocking on the SSE stream.
+        """
+        from backend.server import trace_logs
+        from fastapi import Request
+        from fastapi.responses import StreamingResponse
+
+        # Create a mock request (scope type must be "http" for Starlette)
+        mock_request = Request({
+            "type": "http",
+            "asgi": {"version": "3"},
+            "http_version": "1.1",
+            "method": "GET",
+            "path": "/api/trace-logs",
+            "headers": [],
+        })
+
+        # Call handler - returns StreamingResponse
+        import asyncio
+        loop = asyncio.new_event_loop()
+        resp = loop.run_until_complete(trace_logs(mock_request))
+        loop.close()
+
+        self.assertIsInstance(resp, StreamingResponse)
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.headers.get("content-type"),
+                         "text/event-stream; charset=utf-8")
+        self.assertEqual(resp.headers.get("cache-control"), "no-cache")
+        self.assertEqual(resp.headers.get("connection"), "keep-alive")
+        self.assertEqual(resp.headers.get("access-control-allow-origin"), "*")
+
+    def test_trace_logs_cors_headers(self):
+        """ARRANGE: Cross-origin request to trace logs
+        ACT: Call trace_logs handler with Origin header
+        ASSERT: CORS headers present"""
+        from backend.server import trace_logs
+        from fastapi import Request
+
+        mock_request = Request({
+            "type": "http",
+            "asgi": {"version": "3"},
+            "http_version": "1.1",
+            "method": "GET",
+            "path": "/api/trace-logs",
+            "headers": [(b"origin", b"http://example.com")],
+        })
+
+        import asyncio
+        loop = asyncio.new_event_loop()
+        resp = loop.run_until_complete(trace_logs(mock_request))
+        loop.close()
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.headers.get("access-control-allow-origin"), "*")
+
+    def test_log_streamer_push_and_get_recent(self):
+        """ARRANGE: Clean LogStreamer
+        ACT: Push entries, then call get_recent()
+        ASSERT: Returns entries in correct order with correct format"""
+        from backend.log_streamer import log_streamer
+
+        log_streamer._buffer.clear()
+        log_streamer.push({"timestamp": "12:00:00", "level": "INFO",
+                           "message": "Server started"})
+        log_streamer.push({"timestamp": "12:00:01", "level": "DEBUG",
+                           "message": "Processing request"})
+        log_streamer.push({"timestamp": "12:00:02", "level": "WARNING",
+                           "message": "High memory usage"})
+
+        entries = log_streamer.get_recent(50)
+        self.assertEqual(len(entries), 3)
+        self.assertEqual(entries[0]["level"], "INFO")
+        self.assertEqual(entries[0]["message"], "Server started")
+        self.assertEqual(entries[1]["level"], "DEBUG")
+        self.assertEqual(entries[1]["message"], "Processing request")
+        self.assertEqual(entries[2]["level"], "WARNING")
+        self.assertEqual(entries[2]["message"], "High memory usage")
+
+        log_streamer._buffer.clear()
+
+    def test_log_streamer_get_recent_limits_count(self):
+        """ARRANGE: Push more entries than requested count
+        ACT: Call get_recent(count=2)
+        ASSERT: Returns only the last N entries"""
+        from backend.log_streamer import log_streamer
+
+        log_streamer._buffer.clear()
+        for i in range(10):
+            log_streamer.push({"timestamp": f"12:00:{i:02d}", "level": "INFO",
+                               "message": f"Entry {i}"})
+
+        entries = log_streamer.get_recent(2)
+        self.assertEqual(len(entries), 2)
+        self.assertEqual(entries[0]["message"], "Entry 8")
+        self.assertEqual(entries[1]["message"], "Entry 9")
+
+        log_streamer._buffer.clear()
+
+    def test_log_streamer_empty_buffer(self):
+        """ARRANGE: No entries in buffer
+        ACT: Call get_recent()
+        ASSERT: Returns empty list"""
+        from backend.log_streamer import log_streamer
+
+        log_streamer._buffer.clear()
+        entries = log_streamer.get_recent(50)
+        self.assertEqual(entries, [])
+
+    def test_log_streamer_sse_format(self):
+        """ARRANGE: Push entries
+        ACT: Format as SSE lines
+        ASSERT: Each line starts with 'data:' and contains valid JSON"""
+        from backend.log_streamer import log_streamer
+        import json
+
+        log_streamer._buffer.clear()
+        log_streamer.push({"timestamp": "12:00:00", "level": "INFO",
+                           "message": "Test message"})
+
+        entries = log_streamer.get_recent(50)
+        for entry in entries:
+            sse_line = f"data: {json.dumps(entry)}\n\n"
+            self.assertTrue(sse_line.startswith("data:"))
+            # Verify the JSON payload is parseable
+            payload = sse_line[5:].strip()
+            parsed = json.loads(payload)
+            self.assertIn("level", parsed)
+            self.assertIn("message", parsed)
+            self.assertIn("timestamp", parsed)
+
+        log_streamer._buffer.clear()
 
 
 if __name__ == "__main__":

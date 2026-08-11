@@ -2,11 +2,14 @@
 
 Configures a shared logger with a single handler.
 All modules should import `trace_logger` from this module.
+Also pushes structured entries to the SSE log streamer.
 """
 
 import logging
 import time
 from typing import Optional
+
+from backend.log_streamer import log_streamer
 
 # Shared logger - configured once, reused everywhere
 logger = logging.getLogger("lmstudio_console")
@@ -46,6 +49,13 @@ class TraceLogger:
         self._log.debug(f"OUT {method:6s} {path} -> {target_url}")
         if body:
             self._log.debug(f"     body: {body[:200]}{'...' if len(body) > 200 else ''}")
+        log_streamer.push({
+            "timestamp": time.strftime("%H:%M:%S"),
+            "level": "DEBUG",
+            "method": method,
+            "path": path,
+            "message": f"OUT {method} {path} -> {target_url}",
+        })
         return trace
 
     def log_response(self, trace: "RequestTrace", status: int, content_type: str, duration: float, body: Optional[str] = None) -> None:
@@ -56,12 +66,30 @@ class TraceLogger:
         self._log.debug(f"IN  {status_label:12s} {trace.path} ({duration:.3f}s)")
         if body:
             self._log.debug(f"     body: {body[:200]}{'...' if len(body) > 200 else ''}")
+        log_streamer.push({
+            "timestamp": time.strftime("%H:%M:%S"),
+            "level": "DEBUG",
+            "method": trace.method,
+            "path": trace.path,
+            "status": status,
+            "duration": round(duration, 3),
+            "message": f"IN  {status_label} {trace.path} ({duration:.3f}s)",
+        })
 
     def log_error(self, trace: "RequestTrace", error: Exception, duration: float) -> None:
         """Log a failed request."""
         trace.duration = duration
         trace.error = self._error_msg(error)
-        self._log.error(f"ERR {trace.method:6s} {trace.path} -> {trace.target} ({duration:.3f}s): {self._error_msg(error)}")
+        err_msg = self._error_msg(error)
+        self._log.error(f"ERR {trace.method:6s} {trace.path} -> {trace.target} ({duration:.3f}s): {err_msg}")
+        log_streamer.push({
+            "timestamp": time.strftime("%H:%M:%S"),
+            "level": "ERROR",
+            "method": trace.method,
+            "path": trace.path,
+            "duration": round(duration, 3),
+            "message": f"ERR {trace.method} {trace.path} -> {trace.target} ({duration:.3f}s): {err_msg}",
+        })
 
     def log_cancelled(self, trace: "RequestTrace", duration: float) -> None:
         """Log a stream cancelled by the consumer (client disconnect or task cancellation).
@@ -75,10 +103,26 @@ class TraceLogger:
             f"CXL {trace.method:6s} {trace.path} -> {trace.target} "
             f"({duration:.3f}s): stream cancelled"
         )
+        log_streamer.push({
+            "timestamp": time.strftime("%H:%M:%S"),
+            "level": "INFO",
+            "method": trace.method,
+            "path": trace.path,
+            "duration": round(duration, 3),
+            "message": f"CXL {trace.method} {trace.path} -> {trace.target} ({duration:.3f}s): stream cancelled",
+        })
 
     def log_server_error(self, method: str, path: str, error: Exception) -> None:
         """Log a server-side error (e.g. response handling failure)."""
-        self._log.error(f"ERR {method:6s} {path}: {self._error_msg(error)}")
+        err_msg = self._error_msg(error)
+        self._log.error(f"ERR {method:6s} {path}: {err_msg}")
+        log_streamer.push({
+            "timestamp": time.strftime("%H:%M:%S"),
+            "level": "ERROR",
+            "method": method,
+            "path": path,
+            "message": f"ERR {method} {path}: {err_msg}",
+        })
 
 
 # Shared singleton instance

@@ -2,12 +2,13 @@
  * Main entry point - wires all modules together and binds events.
  */
 
-import { state, saveSettings, loadSettings, saveSessionHistory } from "./state.js";
+import { state, saveSettings, loadSettings, saveSessionHistory, applyTheme } from "./state.js";
 import { connect, disconnect } from "./connection.js";
 import { refreshModels, loadModel, unloadModel } from "./models.js";
 import { sendMessage, newChat, clearAttachments, renderAttachmentPreview, cancelRequest } from "./chat.js";
 import { renderHistoryList, continueSession, deleteSession } from "./history.js";
 import { showToast, autoResizeInput, updateMetrics } from "./ui.js";
+import { connectTraceLog, disconnectTraceLog, clearTraceLog, togglePause } from "./trace.js";
 
 /* ═══════════════════════════════════════════
    DOM REFERENCES
@@ -26,6 +27,7 @@ const dom = {
     temperature: document.getElementById("temperature"),
     temperatureValue: document.getElementById("temperatureValue"),
     toolCallToggle: document.getElementById("toolCallToggle"),
+    themeSelect: document.getElementById("themeSelect"),
     historyToggle: document.getElementById("historyToggle"),
     historyPanel: document.getElementById("historyPanel"),
     historyList: document.getElementById("historyList"),
@@ -51,6 +53,11 @@ const dom = {
     toastContainer: document.getElementById("toastContainer"),
     sidebar: document.getElementById("sidebar"),
     sidebarToggle: document.getElementById("sidebarToggle"),
+    traceToggle: document.getElementById("traceToggle"),
+    tracePanel: document.getElementById("tracePanel"),
+    traceLog: document.getElementById("traceLog"),
+    traceClearBtn: document.getElementById("traceClearBtn"),
+    tracePauseBtn: document.getElementById("tracePauseBtn"),
 };
 
 /* ═══════════════════════════════════════════
@@ -110,6 +117,11 @@ dom.toolCallToggle.addEventListener("change", () => {
     state.toolCallEnabled = dom.toolCallToggle.checked;
     saveSettings();
     showToast(state.toolCallEnabled ? "Tool calls enabled" : "Tool calls disabled", "info");
+});
+
+// Theme selector
+dom.themeSelect.addEventListener("change", () => {
+    applyTheme(dom.themeSelect.value);
 });
 
 // File attachment
@@ -178,9 +190,25 @@ dom.sidebarToggle.addEventListener("click", () => {
     dom.sidebar.classList.toggle("collapsed");
 });
 
+// Trace log panel
+dom.traceToggle.addEventListener("click", () => {
+    dom.traceToggle.classList.toggle("open");
+    dom.tracePanel.classList.toggle("open");
+    if (dom.tracePanel.classList.contains("open")) {
+        connectTraceLog(dom);
+    } else {
+        disconnectTraceLog();
+    }
+});
+
+dom.traceClearBtn.addEventListener("click", () => clearTraceLog(dom));
+dom.tracePauseBtn.addEventListener("click", () => togglePause(dom));
+
 /* ═══════════════════════════════════════════
    INIT
    ═══════════════════════════════════════════ */
 loadSettings(dom);
+applyTheme(state.theme);
+if (dom.themeSelect) dom.themeSelect.value = state.theme;
 autoResizeInput(dom.chatInput);
 renderHistoryList(dom);

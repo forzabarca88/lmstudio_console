@@ -1,0 +1,81 @@
+/* ═══════════════════════════════════════════
+   THEME: Cyberpunk (Dark)
+   Deep slate + electric violet
+   ═══════════════════════════════════════════ */
+:root {
+    /* Color scheme — dark for cyberpunk theme */
+    --color-scheme: dark;
+
+    /* Background palette */
+    --bg-base: #0c0f14;
+    --bg-panel: #111827;
+    --bg-surface: #1e293b;
+    --bg-input: #0f172a;
+    --bg-elevated: #1a2332;
+
+    /* Accent (violet) */
+    --accent: #7c3aed;
+    --accent-glow: rgba(124, 58, 237, 0.25);
+    --accent-bright: #a78bfa;
+    --accent-dim: #5b21b6;
+    --accent-subtle: rgba(124, 58, 237, 0.06);
+    --accent-soft: rgba(124, 58, 237, 0.08);
+    --accent-decor: rgba(124, 58, 237, 0.3);
+
+    /* Coral (warm orange) */
+    --coral: #f97316;
+    --coral-glow: rgba(249, 115, 22, 0.2);
+    --coral-subtle: rgba(249, 115, 22, 0.04);
+    --coral-soft: rgba(249, 115, 22, 0.12);
+    --coral-border: rgba(249, 115, 22, 0.15);
+    --coral-border-strong: rgba(249, 115, 22, 0.25);
+    --coral-border-xstrong: rgba(249, 115, 22, 0.3);
+
+    /* Success (green) */
+    --success: #10b981;
+    --success-glow: rgba(16, 185, 129, 0.25);
+    --success-subtle: rgba(16, 185, 129, 0.06);
+    --success-soft: rgba(16, 185, 129, 0.12);
+    --success-border: rgba(16, 185, 129, 0.2);
+    --success-border-strong: rgba(16, 185, 129, 0.3);
+
+    /* Danger (red) */
+    --danger: #ef4444;
+    --danger-glow: rgba(239, 68, 68, 0.25);
+    --danger-bright: #f87171;
+    --danger-subtle: rgba(239, 68, 68, 0.06);
+    --danger-soft: rgba(239, 68, 68, 0.08);
+    --danger-soft-alpha: rgba(239, 68, 68, 0.12);
+    --danger-border: rgba(239, 68, 68, 0.2);
+    --danger-glow-bright: rgba(239, 68, 68, 0.5);
+
+    /* Text */
+    --text-primary: #f1f5f9;
+    --text-secondary: #94a3b8;
+    --text-muted: #475569;
+    --muted-soft: rgba(148, 163, 184, 0.1);
+    --muted-border: rgba(148, 163, 184, 0.15);
+
+    /* Borders */
+    --border: #1e293b;
+    --border-active: #7c3aed;
+    --border-subtle: rgba(124, 58, 237, 0.15);
+
+    /* Typography */
+    --font-display: 'Space Grotesk', sans-serif;
+    --font-body: 'Inter', -apple-system, sans-serif;
+    --font-mono: 'JetBrains Mono', monospace;
+
+    /* Radius */
+    --radius-sm: 6px;
+    --radius-md: 10px;
+    --radius-lg: 14px;
+    --radius-xl: 20px;
+
+    /* Layout */
+    --sidebar-width: 300px;
+
+    /* Utility colors */
+    --color-white: #fff;
+    --shadow-color: rgba(0, 0, 0, 0.4);
+}

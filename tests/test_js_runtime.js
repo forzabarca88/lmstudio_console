@@ -87,8 +87,20 @@ globalThis.localStorage = {
     clear() { this._data = {}; },
 };
 
+// Track dispatched events for testing
+globalThis._dispatchedEvents = [];
+
+// Cache for mock DOM elements so properties (href, value, etc.) persist
+const _domCache = {};
+
 globalThis.document = {
-    getElementById() { return _createMockElement(); },
+    getElementById(id) {
+        if (!_domCache[id]) {
+            _domCache[id] = _createMockElement();
+            _domCache[id].id = id;
+        }
+        return _domCache[id];
+    },
     createElement(tag) {
         const el = _createMockElement();
         el.tagName = tag;
@@ -97,8 +109,33 @@ globalThis.document = {
     body: { appendChild() {} },
 };
 
+// Reset the DOM cache before each test group
+function _resetDomCache() {
+    for (const key of Object.keys(_domCache)) delete _domCache[key];
+}
+
+// Mock window for event dispatching
+globalThis.window = {
+    addEventListener(type, fn) {
+        globalThis._listenerMap = globalThis._listenerMap || {};
+        if (!globalThis._listenerMap[type]) globalThis._listenerMap[type] = [];
+        globalThis._listenerMap[type].push(fn);
+    },
+    dispatchEvent(event) {
+        const handlers = (globalThis._listenerMap || {})[event.type] || [];
+        for (const fn of handlers) fn(event);
+    },
+};
+globalThis.CustomEvent = class {
+    constructor(type, options = {}) {
+        this.type = type;
+        this.detail = options.detail || {};
+    }
+};
+
 function _createMockElement() {
     let _textContent = "";
+    let _href = "";
     return {
         get textContent() { return _textContent; },
         set textContent(v) { _textContent = v; },
@@ -112,6 +149,8 @@ function _createMockElement() {
                 .replace(/"/g, '&quot;');
         },
         set innerHTML(v) { _textContent = v; },
+        get href() { return _href; },
+        set href(v) { _href = v; },
         style: {},
         classList: { add() {}, remove() {}, toggle() {} },
         value: "",
@@ -380,6 +419,142 @@ await runTest("saveCurrentSession updates existing session id", () => {
     assert.equal(history[0].id, sessionId);
     assert.equal(history[0].messages.length, 3);
     assert.equal(stateModule.state.currentSessionId, sessionId);
+});
+
+// ─── Theme tests ───────────────────────────────────────────────
+
+console.log("\nTheme module:");
+
+await runTest("state.theme defaults to cyberpunk", () => {
+    assert.equal(stateModule.state.theme, "cyberpunk");
+});
+
+await runTest("applyTheme sets state.theme and updates stylesheet href", () => {
+    _resetDomCache();
+    globalThis.localStorage.clear();
+    globalThis._dispatchedEvents = [];
+    globalThis._listenerMap = {};
+
+    stateModule.state.theme = "cyberpunk";
+    // Set initial href
+    _domCache["theme-stylesheet"] = _createMockElement();
+    _domCache["theme-stylesheet"].id = "theme-stylesheet";
+    _domCache["theme-stylesheet"].href = "/static/css/theme-cyberpunk.css";
+
+    stateModule.applyTheme("light");
+
+    assert.equal(stateModule.state.theme, "light");
+    assert.equal(_domCache["theme-stylesheet"].href, "/static/css/theme-light.css");
+});
+
+await runTest("applyTheme calls saveSettings to persist theme", () => {
+    _resetDomCache();
+    globalThis.localStorage.clear();
+    globalThis._dispatchedEvents = [];
+    globalThis._listenerMap = {};
+
+    stateModule.state.theme = "cyberpunk";
+    _domCache["theme-stylesheet"] = _createMockElement();
+    _domCache["theme-stylesheet"].id = "theme-stylesheet";
+    _domCache["theme-stylesheet"].href = "/static/css/theme-cyberpunk.css";
+
+    stateModule.applyTheme("warm");
+
+    const saved = JSON.parse(globalThis.localStorage.getItem("lm_console_settings"));
+    assert.equal(saved.theme, "warm");
+});
+
+await runTest("applyTheme dispatches themechanged event", () => {
+    _resetDomCache();
+    globalThis.localStorage.clear();
+    globalThis._dispatchedEvents = [];
+    globalThis._listenerMap = {};
+
+    let eventReceived = false;
+    let eventDetail = null;
+    globalThis.window.addEventListener("themechanged", (e) => {
+        eventReceived = true;
+        eventDetail = e.detail;
+    });
+
+    stateModule.state.theme = "cyberpunk";
+    _domCache["theme-stylesheet"] = _createMockElement();
+    _domCache["theme-stylesheet"].id = "theme-stylesheet";
+    _domCache["theme-stylesheet"].href = "/static/css/theme-cyberpunk.css";
+
+    stateModule.applyTheme("light");
+
+    assert.equal(eventReceived, true, "themechanged event should be dispatched");
+    assert.equal(eventDetail.theme, "light");
+});
+
+await runTest("applyTheme reinitializes mermaid with matching theme", () => {
+    _resetDomCache();
+    globalThis.localStorage.clear();
+    globalThis._dispatchedEvents = [];
+    globalThis._listenerMap = {};
+
+    stateModule.state.theme = "cyberpunk";
+    _domCache["theme-stylesheet"] = _createMockElement();
+    _domCache["theme-stylesheet"].id = "theme-stylesheet";
+    _domCache["theme-stylesheet"].href = "/static/css/theme-cyberpunk.css";
+
+    // Track mermaid.initialize calls
+    let lastMermaidTheme = null;
+    const origMermaid = globalThis.mermaid;
+    globalThis.mermaid = {
+        initialize: (opts) => { lastMermaidTheme = opts.theme; },
+        render: async () => ({ svg: "<svg></svg>" }),
+    };
+
+    try {
+        stateModule.applyTheme("light");
+        assert.equal(lastMermaidTheme, "default", "Light theme should map to mermaid 'default'");
+
+        stateModule.applyTheme("cyberpunk");
+        assert.equal(lastMermaidTheme, "dark", "Cyberpunk theme should map to mermaid 'dark'");
+
+        stateModule.applyTheme("warm");
+        assert.equal(lastMermaidTheme, "neutral", "Warm theme should map to mermaid 'neutral'");
+    } finally {
+        globalThis.mermaid = origMermaid;
+    }
+});
+
+await runTest("saveSettings includes theme", () => {
+    globalThis.localStorage.clear();
+    stateModule.state.theme = "warm";
+    stateModule.saveSettings();
+
+    const saved = JSON.parse(globalThis.localStorage.getItem("lm_console_settings"));
+    assert.equal(saved.theme, "warm");
+});
+
+await runTest("loadSettings restores theme from localStorage", () => {
+    globalThis.localStorage.clear();
+    globalThis.localStorage.setItem("lm_console_settings", JSON.stringify({
+        endpoint: "http://localhost:1234",
+        apiToken: "",
+        systemPrompt: "You are a helpful assistant.",
+        temperature: 0.7,
+        selectedModel: null,
+        toolCallEnabled: false,
+        theme: "light",
+    }));
+
+    stateModule.state.theme = "cyberpunk";
+
+    const dom = {
+        endpoint: { value: "" },
+        apiToken: { value: "" },
+        systemPrompt: { value: "" },
+        temperature: { value: "" },
+        temperatureValue: { textContent: "" },
+        toolCallToggle: { checked: false },
+    };
+    stateModule.loadSettings(dom);
+
+    assert.equal(stateModule.state.theme, "light");
 });
 
 // ─── Abort/cancellation tests (abortActiveRequest) ─────────────

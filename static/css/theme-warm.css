@@ -1,0 +1,342 @@
+/* ═══════════════════════════════════════════
+   THEME: Warm Minimal
+   Cream + burnt orange — paper texture, very rounded, no shadows
+   ═══════════════════════════════════════════ */
+
+@import url('https://fonts.googleapis.com/css2?family=Noto+Sans:ital,wght@0,300;0,400;0,500;0,600;0,700;1,400&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Lora:ital,wght@0,400;0,500;0,600;0,700;1,400&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=DM+Mono:ital,wght@0,400;0,500;1,400&display=swap');
+
+:root {
+    /* Light theme */
+    --color-scheme: light;
+
+    /* Background palette */
+    --bg-base: #F5F0E8;
+    --bg-panel: #EDE6D9;
+    --bg-surface: #E5DBCA;
+    --bg-input: #EDE6D9;
+    --bg-elevated: #F0E9DC;
+
+    /* Accent (burnt orange) */
+    --accent: #D4772C;
+    --accent-glow: rgba(212, 119, 44, 0.10);
+    --accent-bright: #E8913E;
+    --accent-dim: #B8621E;
+    --accent-subtle: rgba(212, 119, 44, 0.04);
+    --accent-soft: rgba(212, 119, 44, 0.06);
+    --accent-decor: rgba(212, 119, 44, 0.12);
+
+    /* Coral (warm orange - slightly brighter than accent) */
+    --coral: #E07A35;
+    --coral-glow: rgba(224, 122, 53, 0.10);
+    --coral-subtle: rgba(224, 122, 53, 0.04);
+    --coral-soft: rgba(224, 122, 53, 0.08);
+    --coral-border: rgba(224, 122, 53, 0.18);
+    --coral-border-strong: rgba(224, 122, 53, 0.28);
+    --coral-border-xstrong: rgba(224, 122, 53, 0.38);
+
+    /* Success (muted green) */
+    --success: #6B8F71;
+    --success-glow: rgba(107, 143, 113, 0.12);
+    --success-subtle: rgba(107, 143, 113, 0.04);
+    --success-soft: rgba(107, 143, 113, 0.08);
+    --success-border: rgba(107, 143, 113, 0.18);
+    --success-border-strong: rgba(107, 143, 113, 0.28);
+
+    /* Danger (muted red) */
+    --danger: #C0392B;
+    --danger-glow: rgba(192, 57, 43, 0.10);
+    --danger-bright: #E74C3C;
+    --danger-subtle: rgba(192, 57, 43, 0.04);
+    --danger-soft: rgba(192, 57, 43, 0.06);
+    --danger-soft-alpha: rgba(192, 57, 43, 0.08);
+    --danger-border: rgba(192, 57, 43, 0.15);
+    --danger-glow-bright: rgba(192, 57, 43, 0.30);
+
+    /* Text */
+    --text-primary: #3D2B1F;
+    --text-secondary: #7A6B5D;
+    --text-muted: #A89888;
+    --muted-soft: rgba(122, 107, 93, 0.08);
+    --muted-border: rgba(122, 107, 93, 0.12);
+
+    /* Borders */
+    --border: #D6CBB8;
+    --border-active: #D4772C;
+    --border-subtle: rgba(212, 119, 44, 0.12);
+
+    /* Typography */
+    --font-display: 'Lora', Georgia, serif;
+    --font-body: 'Noto Sans', -apple-system, sans-serif;
+    --font-mono: 'DM Mono', monospace;
+
+    /* Radius — very rounded */
+    --radius-sm: 10px;
+    --radius-md: 14px;
+    --radius-lg: 16px;
+    --radius-xl: 24px;
+
+    /* Layout */
+    --sidebar-width: 300px;
+
+    /* Utility colors */
+    --color-white: #fff;
+    --shadow-color: rgba(61, 43, 31, 0.04);
+}
+
+/* ═══════════════════════════════════════════
+   THEME-SPECIFIC OVERRIDES
+   ═══════════════════════════════════════════ */
+
+/* Main background — warm cream with subtle dot-grid pattern */
+.main {
+    background-color: var(--bg-base);
+    background-image: radial-gradient(var(--accent-subtle) 1px, transparent 1px);
+    background-size: 20px 20px;
+}
+
+/* Sidebar — flat beige, thin border, no shadow */
+.sidebar {
+    border-right: 1px solid var(--border);
+    box-shadow: none;
+}
+
+/* Sidebar header — flat, warm underline */
+.sidebar-header {
+    border-top: none;
+    border-bottom: 2px solid var(--accent);
+    background: var(--bg-panel);
+}
+
+/* Logo — flat, no glow */
+.logo-icon {
+    box-shadow: none;
+    border-color: var(--accent);
+}
+
+/* Input focus — thin accent border, no glow */
+input:focus,
+textarea:focus,
+select:focus,
+.chat-input:focus {
+    border-color: var(--accent);
+    box-shadow: 0 0 0 2px var(--accent-glow);
+}
+
+/* Buttons — flat, no shadow */
+.btn-primary {
+    box-shadow: none;
+}
+
+.btn-primary:hover {
+    box-shadow: none;
+}
+
+/* Danger button hover — flat */
+.btn-danger:hover {
+    box-shadow: none;
+}
+
+/* Status dot — subtle solid ring, no glow */
+.status-dot.connected {
+    box-shadow: 0 0 0 2px var(--success-soft);
+}
+
+.status-dot.loading {
+    box-shadow: 0 0 0 2px var(--coral-soft);
+}
+
+.status-dot.error {
+    box-shadow: 0 0 0 2px var(--danger-soft);
+}
+
+/* Model items — thin border highlight, no shadow */
+.model-item.selected {
+    box-shadow: none;
+    border: 1px solid var(--accent);
+}
+
+/* Chat header — flat, thin bottom border */
+.chat-header {
+    box-shadow: none;
+    border-bottom: 1px solid var(--border);
+}
+
+/* Message avatars — flat */
+.message.user .message-avatar {
+    box-shadow: none;
+}
+
+.message.assistant .message-avatar {
+    box-shadow: none;
+}
+
+/* Code blocks — flat with thin border */
+.message-text pre {
+    box-shadow: none;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+}
+
+/* Inline code — warm background, thin border */
+.message-text code {
+    background: var(--bg-surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+}
+
+/* Blockquote — accent left border */
+.message-text blockquote {
+    border-left: 3px solid var(--accent);
+    background: var(--accent-subtle);
+    border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+}
+
+/* Tables — warm header background */
+.message-text th {
+    background: var(--bg-surface);
+    font-weight: 600;
+}
+
+/* Send button — flat, very rounded */
+.send-btn {
+    box-shadow: none;
+    border-radius: var(--radius-xl);
+}
+
+.send-btn:hover {
+    box-shadow: none;
+}
+
+/* Stop mode — flat pulse */
+.send-btn.stop-mode {
+    box-shadow: none;
+    animation: stopPulseWarm 1.4s ease-in-out infinite;
+}
+
+.send-btn.stop-mode:hover {
+    box-shadow: none;
+}
+
+@keyframes stopPulseWarm {
+    0%, 100% { box-shadow: none; }
+    50% { box-shadow: 0 0 0 3px var(--danger-soft); }
+}
+
+/* Attach button — flat */
+.attach-btn {
+    box-shadow: none;
+}
+
+.attach-btn:hover {
+    box-shadow: none;
+}
+
+/* Toast — flat with thin accent border */
+.toast {
+    box-shadow: none;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+}
+
+.toast.success {
+    box-shadow: none;
+    border: 1px solid var(--success);
+}
+
+.toast.error {
+    box-shadow: none;
+    border: 1px solid var(--danger);
+}
+
+.toast.info {
+    box-shadow: none;
+    border: 1px solid var(--accent);
+}
+
+/* Thinking block — flat */
+.thinking-block > details {
+    box-shadow: none;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+}
+
+/* Tool call — flat panels */
+.tool-call-args,
+.tool-call-result {
+    box-shadow: none;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+}
+
+/* Cursor indicator — solid accent */
+.cursor-indicator {
+    background: var(--accent);
+}
+
+/* Scrollbar — warm muted */
+::-webkit-scrollbar-thumb {
+    background: rgba(61, 43, 31, 0.15);
+    border-radius: 6px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+    background: rgba(61, 43, 31, 0.28);
+}
+
+/* Mermaid diagrams — warm theme */
+.mermaid {
+    background: var(--bg-surface) !important;
+    border: 1px solid var(--border) !important;
+    border-radius: var(--radius-sm) !important;
+}
+
+.mermaid .node rect,
+.mermaid .node circle,
+.mermaid .node polygon {
+    fill: var(--bg-panel) !important;
+    stroke: var(--border) !important;
+}
+
+.mermaid .edgePath path {
+    stroke: var(--text-muted) !important;
+}
+
+.mermaid .nodeText,
+.mermaid .clusterText {
+    fill: var(--text-primary) !important;
+}
+
+/* Toggle slider — warm */
+.toggle-slider {
+    background: var(--bg-surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+}
+
+.toggle-slider::after {
+    background: var(--text-muted);
+}
+
+.toggle-label input:checked + .toggle-slider {
+    background: var(--accent);
+    border-color: var(--accent);
+}
+
+.toggle-label input:checked + .toggle-slider::after {
+    background: var(--color-white);
+}
+
+/* Focus visible — clean outline */
+:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+}
+
+/* Chat input area — very rounded */
+.chat-input-wrapper {
+    border-radius: var(--radius-lg);
+    box-shadow: none;
+    border: 1px solid var(--border);
+}

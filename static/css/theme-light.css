@@ -1,0 +1,315 @@
+/* ═══════════════════════════════════════════
+   THEME: Light Professional
+   Clean corporate — white surfaces, teal accent
+   ═══════════════════════════════════════════ */
+
+@import url('https://fonts.googleapis.com/css2?family=Source+Sans+3:ital,wght@0,300;0,400;0,600;0,700;1,400&family=Source+Serif+4:ital,wght@0,300;0,400;0,600;1,400&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:ital,wght@0,400;0,500;0,600;1,400&display=swap');
+
+:root {
+    /* Light theme overrides */
+    --color-scheme: light;
+
+    /* Background palette */
+    --bg-base: #FAFAF8;
+    --bg-panel: #FFFFFF;
+    --bg-surface: #F3F1EE;
+    --bg-input: #FFFFFF;
+    --bg-elevated: #F9FAFB;
+
+    /* Accent (teal) */
+    --accent: #0D9488;
+    --accent-glow: rgba(13, 148, 136, 0.12);
+    --accent-bright: #14B8A6;
+    --accent-dim: #0F766E;
+    --accent-subtle: rgba(13, 148, 136, 0.04);
+    --accent-soft: rgba(13, 148, 136, 0.06);
+    --accent-decor: rgba(13, 148, 136, 0.12);
+
+    /* Coral (warm orange) */
+    --coral: #EA580C;
+    --coral-glow: rgba(234, 88, 12, 0.12);
+    --coral-subtle: rgba(234, 88, 12, 0.04);
+    --coral-soft: rgba(234, 88, 12, 0.08);
+    --coral-border: rgba(234, 88, 12, 0.15);
+    --coral-border-strong: rgba(234, 88, 12, 0.25);
+    --coral-border-xstrong: rgba(234, 88, 12, 0.35);
+
+    /* Success (green) */
+    --success: #059669;
+    --success-glow: rgba(5, 150, 105, 0.12);
+    --success-subtle: rgba(5, 150, 105, 0.04);
+    --success-soft: rgba(5, 150, 105, 0.08);
+    --success-border: rgba(5, 150, 105, 0.15);
+    --success-border-strong: rgba(5, 150, 105, 0.25);
+
+    /* Danger (red) */
+    --danger: #DC2626;
+    --danger-glow: rgba(220, 38, 38, 0.12);
+    --danger-bright: #F87171;
+    --danger-subtle: rgba(220, 38, 38, 0.04);
+    --danger-soft: rgba(220, 38, 38, 0.06);
+    --danger-soft-alpha: rgba(220, 38, 38, 0.08);
+    --danger-border: rgba(220, 38, 38, 0.15);
+    --danger-glow-bright: rgba(220, 38, 38, 0.3);
+
+    /* Text */
+    --text-primary: #1A2332;
+    --text-secondary: #6B7280;
+    --text-muted: #9CA3AF;
+    --muted-soft: rgba(107, 114, 128, 0.08);
+    --muted-border: rgba(107, 114, 128, 0.12);
+
+    /* Borders */
+    --border: #E5E7EB;
+    --border-active: #0D9488;
+    --border-subtle: rgba(13, 148, 136, 0.12);
+
+    /* Typography */
+    --font-display: 'Source Sans 3', sans-serif;
+    --font-body: 'Source Serif 4', Georgia, serif;
+    --font-mono: 'IBM Plex Mono', monospace;
+
+    /* Radius */
+    --radius-sm: 8px;
+    --radius-md: 12px;
+    --radius-lg: 16px;
+    --radius-xl: 24px;
+
+    /* Layout */
+    --sidebar-width: 300px;
+
+    /* Utility colors */
+    --color-white: #fff;
+    --shadow-color: rgba(0, 0, 0, 0.08);
+}
+
+/* ═══════════════════════════════════════════
+   THEME-SPECIFIC OVERRIDES
+   ═══════════════════════════════════════════ */
+
+/* Main background — subtle warm off-white, no gradient glow */
+.main {
+    background: var(--bg-base);
+}
+
+/* Sidebar — white with teal accent bar at top */
+.sidebar {
+    border-right: 1px solid var(--border);
+    box-shadow: 1px 0 8px rgba(0, 0, 0, 0.04);
+}
+
+/* Teal accent bar on sidebar header */
+.sidebar-header {
+    border-top: 3px solid var(--accent);
+    border-bottom: 1px solid var(--border);
+    background: var(--bg-panel);
+}
+
+/* Logo — clean, no glow */
+.logo-icon {
+    box-shadow: none;
+    border-color: var(--accent);
+}
+
+/* Input focus — subtle ring, no glow */
+input:focus,
+textarea:focus,
+select:focus,
+.chat-input:focus {
+    border-color: var(--accent);
+    box-shadow: 0 0 0 2px var(--accent-glow);
+}
+
+/* Buttons — flat, subtle shadow */
+.btn-primary {
+    box-shadow: none;
+}
+
+.btn-primary:hover {
+    box-shadow: 0 1px 4px var(--accent-glow);
+}
+
+/* Danger button hover — flat */
+.btn-danger:hover {
+    box-shadow: none;
+}
+
+/* Status dot — subtle ring */
+.status-dot.connected {
+    box-shadow: 0 0 0 3px var(--success-glow);
+}
+
+.status-dot.loading {
+    box-shadow: 0 0 0 3px var(--coral-glow);
+}
+
+.status-dot.error {
+    box-shadow: 0 0 0 3px var(--danger-glow);
+}
+
+/* Model items — subtle border highlight */
+.model-item.selected {
+    box-shadow: inset 0 0 0 1px var(--border-subtle);
+}
+
+/* Chat header — clean */
+.chat-header {
+    box-shadow: 0 1px 0 var(--border);
+}
+
+/* Message avatars — flat */
+.message.user .message-avatar {
+    box-shadow: none;
+}
+
+.message.assistant .message-avatar {
+    box-shadow: none;
+}
+
+/* Code blocks — subtle shadow */
+.message-text pre {
+    box-shadow: 0 1px 4px rgba(0, 0, 0, 0.04);
+}
+
+/* Inline code — soft background */
+.message-text code {
+    background: var(--bg-surface);
+    border: 1px solid var(--border);
+}
+
+/* Blockquote — clean left border */
+.message-text blockquote {
+    border-left: 3px solid var(--accent);
+    background: var(--accent-subtle);
+}
+
+/* Tables — hairline borders */
+.message-text th {
+    background: var(--bg-surface);
+    font-weight: 600;
+}
+
+/* Send button — flat, no glow */
+.send-btn {
+    box-shadow: none;
+    border-radius: var(--radius-md);
+}
+
+.send-btn:hover {
+    box-shadow: 0 2px 8px var(--accent-glow);
+}
+
+/* Stop mode — flat */
+.send-btn.stop-mode {
+    box-shadow: none;
+    animation: stopPulseLight 1.4s ease-in-out infinite;
+}
+
+.send-btn.stop-mode:hover {
+    box-shadow: 0 2px 8px var(--danger-glow);
+}
+
+@keyframes stopPulseLight {
+    0%, 100% { box-shadow: none; }
+    50% { box-shadow: 0 2px 10px var(--danger-glow); }
+}
+
+/* Attach button — flat */
+.attach-btn {
+    box-shadow: none;
+}
+
+.attach-btn:hover {
+    box-shadow: 0 1px 4px var(--accent-glow);
+}
+
+/* Toast — subtle shadow */
+.toast {
+    box-shadow: 0 2px 12px rgba(0, 0, 0, 0.08);
+}
+
+.toast.success {
+    box-shadow: 0 2px 12px rgba(0, 0, 0, 0.08), 0 0 0 1px var(--success);
+}
+
+.toast.error {
+    box-shadow: 0 2px 12px rgba(0, 0, 0, 0.08), 0 0 0 1px var(--danger);
+}
+
+.toast.info {
+    box-shadow: 0 2px 12px rgba(0, 0, 0, 0.08), 0 0 0 1px var(--accent);
+}
+
+/* Thinking block — clean */
+.thinking-block > details {
+    box-shadow: 0 1px 4px rgba(0, 0, 0, 0.04);
+}
+
+/* Tool call — flat panels */
+.tool-call-args,
+.tool-call-result {
+    box-shadow: 0 1px 4px rgba(0, 0, 0, 0.04);
+}
+
+/* Cursor indicator — solid, no glow */
+.cursor-indicator {
+    background: var(--accent);
+}
+
+/* Scrollbar — light theme */
+::-webkit-scrollbar-thumb {
+    background: rgba(0, 0, 0, 0.15);
+    border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+    background: rgba(0, 0, 0, 0.25);
+}
+
+/* Mermaid diagrams — light theme */
+.mermaid {
+    background: var(--bg-surface) !important;
+    border: 1px solid var(--border) !important;
+}
+
+.mermaid .node rect,
+.mermaid .node circle,
+.mermaid .node polygon {
+    fill: var(--bg-panel) !important;
+    stroke: var(--border) !important;
+}
+
+.mermaid .edgePath path {
+    stroke: var(--text-muted) !important;
+}
+
+.mermaid .nodeText,
+.mermaid .clusterText {
+    fill: var(--text-primary) !important;
+}
+
+/* Toggle slider — light theme */
+.toggle-slider {
+    background: var(--bg-surface);
+    border: 1px solid var(--border);
+}
+
+.toggle-slider::after {
+    background: var(--text-muted);
+}
+
+.toggle-label input:checked + .toggle-slider {
+    background: var(--accent);
+    border-color: var(--accent);
+}
+
+.toggle-label input:checked + .toggle-slider::after {
+    background: var(--color-white);
+}
+
+/* Focus visible — clean outline */
+:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+}

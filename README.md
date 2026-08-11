@@ -18,6 +18,8 @@ Remote web management dashboard and chat interface for LM Studio.
 - **Settings**: Configurable system prompt and temperature
 - **Persistence**: Settings saved to localStorage between sessions
 - **Trace Logging**: Detailed request/response logging on the server console
+- **Live Trace Log**: Collapsible panel showing real-time server logs streamed via SSE
+- **UI Themes**: 3 toggleable themes (Cyberpunk Dark, Light Professional, Warm Minimal) with persistent preference
 - **File Attachments**: Upload images, audio, documents for multimodal models
 - **Agentic Tools**: Toggle tool calls (web search, open web page, run python code) for LLM-agentic behavior
 - **Tool Call Feedback**: Real-time UI feedback showing tool name, arguments, and execution status
@@ -70,15 +72,20 @@ The app runs as a non-root user; configure ports/URLs via the same environment v
 
 ```
 ├── backend/
-│   ├── config.py      # Configuration from environment variables
-│   ├── logger.py      # Trace logging for proxy requests
-│   ├── proxy.py       # HTTP proxy service (httpx)
-│   ├── server.py      # FastAPI application + tool/upload endpoints
-│   ├── agent.py       # Pydantic AI Agent for chat with tool call feedback
-│   └── tools.py       # Pydantic AI tool definitions (web search, open web page, run python code)
+│   ├── __init__.py    # Empty package init
+│   ├── config.py      # Configuration from environment variables (host, port, LM Studio URL, static dir)
+│   ├── logger.py      # Trace logging with shared logger, RequestTrace context, cancellation tracking, and SSE streamer integration
+│   ├── log_streamer.py # SSE broadcaster for trace log entries (ring buffer, subscriber broadcast)
+│   ├── proxy.py       # HTTP proxy using httpx for forwarding requests to LM Studio/OpenAI endpoints with streaming and graceful cancellation support
+│   ├── server.py      # FastAPI app with proxy routes, chat endpoint (client disconnect detection, cooperative cancellation), tool endpoints, file upload, trace log SSE, and CORS middleware
+│   ├── agent.py       # Pydantic AI Agent wrapper for chat with automatic tool call handling, tool_call_id-based results, thinking tokens, message format conversion, and cooperative cancellation support
+│   └── tools.py       # Pydantic AI tool definitions (web_search, open_web_page, run_python_code) with OpenAI-compatible schema generation
 ├── static/
 │   ├── css/
-│   │   └── style.css  # Styles
+│   │   ├── base.css         # Structural/layout CSS (theme-agnostic)
+│   │   ├── theme-cyberpunk.css  # Dark cyberpunk theme variables
+│   │   ├── theme-light.css      # Light professional theme variables
+│   │   └── theme-warm.css       # Warm minimal theme variables
 │   ├── js/
 │   │   ├── api.js     # API call utilities
 │   │   ├── app.js     # Main entry point
@@ -87,9 +94,11 @@ The app runs as a non-root user; configure ports/URLs via the same environment v
 │   │   ├── history.js # Chat session history
 │   │   ├── models.js  # Model management
 │   │   ├── state.js   # State & localStorage
+│   │   ├── trace.js   # SSE client for live trace log streaming
 │   │   └── ui.js      # UI utilities + metrics display
 │   └── index.html     # Page structure
 ├── tests/
+│   ├── __init__.py
 │   ├── test_backend.py
 │   ├── test_agent.py
 │   ├── test_integration.py
@@ -97,8 +106,14 @@ The app runs as a non-root user; configure ports/URLs via the same environment v
 │   ├── test_js_runtime.js
 │   ├── test_screenshot.py  # Playwright UI screenshot validation
 │   └── test_tools.py
+├── .dockerignore      # Build context exclusions for the Docker image
+├── .pytest_cache/
+│   └── README.md      # pytest cache directory marker
+├── Dockerfile         # Minimal production Docker image (Python 3.12 + uv, non-root user)
+├── pyproject.toml     # Python project configuration with dependencies
+├── package.json       # Node.js project configuration for frontend dependencies
+├── package-lock.json  # Node.js dependency lock file
 ├── run.py             # Entry point with graceful shutdown
-├── pyproject.toml
 └── README.md
 ```
 

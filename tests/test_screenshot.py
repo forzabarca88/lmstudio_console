@@ -14,6 +14,7 @@ Run: uv run python -m unittest tests.test_screenshot -v
 
 import os
 import sys
+import json
 import unittest
 import subprocess
 import time
@@ -52,6 +53,7 @@ DOM_JS = """const dom = {
     temperature: document.getElementById('temperature'),
     temperatureValue: document.getElementById('temperatureValue'),
     toolCallToggle: document.getElementById('toolCallToggle'),
+    themeSelect: document.getElementById('themeSelect'),
     historyToggle: document.getElementById('historyToggle'),
     historyPanel: document.getElementById('historyPanel'),
     historyList: document.getElementById('historyList'),
@@ -77,6 +79,11 @@ DOM_JS = """const dom = {
     toastContainer: document.getElementById('toastContainer'),
     sidebar: document.getElementById('sidebar'),
     sidebarToggle: document.getElementById('sidebarToggle'),
+    traceToggle: document.getElementById('traceToggle'),
+    tracePanel: document.getElementById('tracePanel'),
+    traceLog: document.getElementById('traceLog'),
+    traceClearBtn: document.getElementById('traceClearBtn'),
+    tracePauseBtn: document.getElementById('tracePauseBtn'),
 };
 """
 
@@ -854,6 +861,164 @@ class TestScreenshot(unittest.TestCase):
             self._screenshot("17_stop_button_interactive")
         finally:
             self.page.unroute("**/api/chat")
+
+    # --- Theme tests ---
+
+    def test_theme_selector_visible(self):
+        """Verify the theme select dropdown exists in the settings panel."""
+        self._navigate()
+
+        # Open settings panel to reveal theme selector
+        self.page.click("#settingsToggle")
+        self.page.wait_for_selector("#settingsPanel.open", timeout=5000)
+
+        # Verify theme select exists and is visible
+        theme_select = self.page.locator("#themeSelect")
+        self.assertTrue(theme_select.is_visible(),
+                        "Theme selector should be visible in settings")
+
+        # Verify options
+        options = self.page.locator("#themeSelect option").all()
+        self.assertEqual(len(options), 3,
+                         "Theme selector should have 3 options")
+        values = [opt.get_attribute("value") for opt in options]
+        self.assertIn("cyberpunk", values)
+        self.assertIn("light", values)
+        self.assertIn("warm", values)
+
+        # Verify default is cyberpunk (select.value requires JS evaluation)
+        default_value = self.page.evaluate(
+            "document.getElementById('themeSelect').value")
+        self.assertEqual(default_value, "cyberpunk")
+
+        self._screenshot("19_theme_selector_visible")
+
+    def test_toggle_theme_light(self):
+        """Switch to Light Professional theme, verify CSS variables changed."""
+        self._navigate()
+
+        # Open settings panel
+        self.page.click("#settingsToggle")
+        self.page.wait_for_selector("#settingsPanel.open", timeout=5000)
+
+        # Switch to light theme
+        self.page.select_option("#themeSelect", "light")
+        self.page.wait_for_timeout(500)
+
+        # Verify stylesheet href changed
+        href = self.page.evaluate("document.getElementById('theme-stylesheet').href")
+        self.assertIn("theme-light.css", href, "Stylesheet should be theme-light.css")
+
+        # Verify CSS variables changed (light theme uses different palette)
+        bg_base = self.page.evaluate("getComputedStyle(document.body).getPropertyValue('--bg-base')")
+        self.assertIn("#FAFAF8", bg_base, "Light theme background should be #FAFAF8")
+
+        # Verify theme state persisted
+        saved = self.page.evaluate("localStorage.getItem('lm_console_settings')")
+        settings = json.loads(saved)
+        self.assertEqual(settings["theme"], "light")
+
+        self._screenshot("20_toggle_theme_light")
+
+    def test_toggle_theme_warm(self):
+        """Switch to Warm Minimal theme, verify CSS variables changed."""
+        self._navigate()
+
+        # Open settings panel
+        self.page.click("#settingsToggle")
+        self.page.wait_for_selector("#settingsPanel.open", timeout=5000)
+
+        # Switch to warm theme
+        self.page.select_option("#themeSelect", "warm")
+        self.page.wait_for_timeout(500)
+
+        # Verify stylesheet href changed
+        href = self.page.evaluate("document.getElementById('theme-stylesheet').href")
+        self.assertIn("theme-warm.css", href, "Stylesheet should be theme-warm.css")
+
+        # Verify CSS variables changed (warm theme uses different palette)
+        bg_base = self.page.evaluate("getComputedStyle(document.body).getPropertyValue('--bg-base')")
+        self.assertIn("#F5F0E8", bg_base, "Warm theme background should be #F5F0E8")
+
+        # Verify theme state persisted
+        saved = self.page.evaluate("localStorage.getItem('lm_console_settings')")
+        settings = json.loads(saved)
+        self.assertEqual(settings["theme"], "warm")
+
+        self._screenshot("21_toggle_theme_warm")
+
+    def test_theme_persistence(self):
+        """Switch theme, reload page, verify theme persists via localStorage."""
+        self._navigate()
+
+        # Open settings panel and switch to light theme
+        self.page.click("#settingsToggle")
+        self.page.wait_for_selector("#settingsPanel.open", timeout=5000)
+        self.page.select_option("#themeSelect", "light")
+        self.page.wait_for_timeout(500)
+
+        # Verify theme was saved
+        saved = self.page.evaluate("localStorage.getItem('lm_console_settings')")
+        settings = json.loads(saved)
+        self.assertEqual(settings["theme"], "light")
+
+        # Reload page
+        self.page.reload()
+        self.page.wait_for_load_state("domcontentloaded")
+        self.page.wait_for_timeout(1000)
+
+        # Verify theme persisted: stylesheet href and select value
+        href = self.page.evaluate("document.getElementById('theme-stylesheet').href")
+        self.assertIn("theme-light.css", href, "Stylesheet should persist as theme-light.css")
+
+        select_value = self.page.evaluate("document.getElementById('themeSelect').value")
+        self.assertEqual(select_value, "light", "Select value should persist as light")
+
+        # Verify CSS variables reflect light theme
+        bg_base = self.page.evaluate("getComputedStyle(document.body).getPropertyValue('--bg-base')")
+        self.assertIn("#FAFAF8", bg_base, "Light theme background should persist")
+
+        self._screenshot("22_theme_persistence")
+
+    def test_trace_log_panel(self):
+        """Open trace log panel, verify it renders and is collapsible."""
+        self._navigate()
+
+        # Verify trace toggle button exists
+        trace_toggle = self.page.locator("#traceToggle")
+        self.assertTrue(trace_toggle.is_visible(), "Trace toggle button should be visible")
+
+        # Verify trace panel is closed by default
+        self.assertTrue(self.page.locator("#tracePanel").is_hidden(), "Trace panel should be closed by default")
+
+        # Open trace log panel
+        self.page.click("#traceToggle")
+        self.page.wait_for_selector("#tracePanel.open", timeout=5000)
+
+        # Verify panel is open
+        self.assertTrue(self.page.locator("#tracePanel").is_visible(), "Trace panel should be visible when opened")
+
+        # Verify trace log container and controls exist
+        self.assertTrue(self.page.locator("#traceLog").is_visible(), "Trace log container should be visible")
+        self.assertTrue(self.page.locator("#traceClearBtn").is_visible(), "Clear button should be visible")
+        self.assertTrue(self.page.locator("#tracePauseBtn").is_visible(), "Pause button should be visible")
+
+        # Verify pause button text
+        pause_text = self.page.text_content("#tracePauseBtn")
+        self.assertEqual(pause_text, "Pause")
+
+        self._screenshot("23a_trace_panel_open")
+
+        # Close trace log panel
+        self.page.click("#traceToggle")
+        self.page.wait_for_timeout(500)
+
+        # Verify panel is closed
+        self.assertTrue(self.page.locator("#tracePanel").is_hidden(), "Trace panel should be closed after toggle")
+
+        self._screenshot("23b_trace_panel_closed")
+
+    # --- Cancellation (stop button) interactive tests ---
 
     def test_new_chat_cancels_request(self):
         """Interactive: Starting a new chat aborts an in-flight request.

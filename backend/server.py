@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import logging
 from contextlib import asynccontextmanager
@@ -18,6 +19,7 @@ from backend.config import get_host, get_port, get_lm_studio_url, get_static_dir
 from backend.proxy import proxy_request, proxy_stream_iter, close_client, trace_logger
 from backend.agent import ChatAgent
 from backend.tools import get_tool_schemas, execute_tool
+from backend.log_streamer import log_streamer
 
 logger = logging.getLogger(__name__)
 
@@ -352,6 +354,62 @@ async def list_tools():
     return JSONResponse(content=get_tool_schemas())
 
 
+# --- SSE trace log streaming ---
+
+@app.get("/api/trace-logs")
+async def trace_logs(request: Request):
+    """Stream trace logs as SSE.
+
+    On connect, sends buffered recent logs, then streams new logs in real-time.
+    Detects client disconnect and cleans up the subscriber.
+
+    A wrapper generator ensures cleanup runs even if the inner generator is
+    garbage-collected before its finally block executes (possible under certain
+    ASGI server behaviours where abandoned StreamingResponse bodies are not
+    properly closed).
+    """
+    sub_id, sub_iter = await log_streamer.subscribe()
+
+    async def log_generator():
+        # Send recent buffered entries for catch-up
+        recent = log_streamer.get_recent(50)
+        for entry in recent:
+            yield f"data: {json.dumps(entry)}\n\n"
+            if await request.is_disconnected():
+                return
+
+        # Stream new entries in real-time
+        try:
+            async for sse_line in sub_iter:
+                yield sse_line
+                if await request.is_disconnected():
+                    break
+        except asyncio.CancelledError:
+            return
+
+    async def safe_generator():
+        """Wrapper that guarantees subscriber cleanup even if the inner
+        generator is garbage-collected without proper closure."""
+        try:
+            async for chunk in log_generator():
+                yield chunk
+        except asyncio.CancelledError:
+            raise
+        finally:
+            await log_streamer.remove(sub_id)
+
+    return StreamingResponse(
+        safe_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+            "Access-Control-Allow-Origin": "*",
+        },
+    )
+
+
 @app.post("/api/tool-exec")
 async def execute_tool_endpoint(request: Request):
     """Execute a registered tool with the given arguments."""
@@ -385,7 +443,6 @@ async def upload_file(request: Request):
 
     # Read and encode
     content = await file.read()
-    import base64
     b64 = base64.b64encode(content).decode("ascii")
     mime_type = file.content_type or "application/octet-stream"
 

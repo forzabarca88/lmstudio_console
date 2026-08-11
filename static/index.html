@@ -8,7 +8,8 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Space+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="/static/css/style.css">
+<link rel="stylesheet" href="/static/css/base.css">
+<link id="theme-stylesheet" rel="stylesheet" href="/static/css/theme-cyberpunk.css">
 <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
 </head>
@@ -96,6 +97,26 @@
                     <span class="toggle-text">Enable tool calls</span>
                 </label>
             </div>
+            <div class="field theme-switcher">
+                <label for="themeSelect">Theme</label>
+                <select id="themeSelect">
+                    <option value="cyberpunk">Cyberpunk</option>
+                    <option value="light">Light Professional</option>
+                    <option value="warm">Warm Minimal</option>
+                </select>
+            </div>
+        </div>
+    </div>
+
+    <button type="button" class="section-toggle" id="traceToggle">
+        <span>📋 Trace Log</span>
+        <span class="chevron">▼</span>
+    </button>
+    <div class="collapsible" id="tracePanel">
+        <div class="trace-log" id="traceLog"></div>
+        <div class="trace-controls">
+            <button type="button" id="traceClearBtn">Clear</button>
+            <button type="button" id="tracePauseBtn">Pause</button>
         </div>
     </div>
 

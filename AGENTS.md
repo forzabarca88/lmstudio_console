@@ -19,24 +19,30 @@
 ├── backend/
 │   ├── __init__.py          # Empty package init
 │   ├── config.py            # Configuration from environment variables (host, port, LM Studio URL, static dir)
-│   ├── logger.py            # Trace logging with shared logger, RequestTrace context, and cancellation tracking
+│   ├── logger.py            # Trace logging with shared logger, RequestTrace context, cancellation tracking, and SSE streamer integration
+│   ├── log_streamer.py      # SSE log streamer: ring buffer (500 entries), subscriber broadcast for live trace log streaming
 │   ├── proxy.py             # HTTP proxy using httpx for forwarding requests to LM Studio/OpenAI endpoints with streaming and graceful cancellation support
-│   ├── server.py            # FastAPI app with proxy routes, chat endpoint (client disconnect detection, cooperative cancellation), tool endpoints, file upload, and CORS middleware
+│   ├── server.py            # FastAPI app with proxy routes, chat endpoint (client disconnect detection, cooperative cancellation), tool endpoints, file upload, trace log SSE, and CORS middleware
 │   ├── agent.py             # Pydantic AI Agent wrapper for chat with automatic tool call handling, tool_call_id-based results, thinking tokens, message format conversion, and cooperative cancellation support
 │   └── tools.py             # Pydantic AI tool definitions (web_search, open_web_page, run_python_code) with OpenAI-compatible schema generation
 ├── static/
 │   ├── css/
-│   │   └── style.css        # Complete styling with dark theme, responsive design, animations, and component styles
+│   │   ├── base.css         # Structural/layout rules (theme-agnostic): reset, layout, sidebar, chat, forms, buttons, components
+│   │   ├── theme-cyberpunk.css  # Dark theme: deep slate + electric violet palette
+│   │   ├── theme-light.css      # Light Professional theme: white/off-white + teal accent
+│   │   └── theme-warm.css       # Warm Minimal theme: warm cream + burnt orange accent
+│   ├── favicon.svg          # Browser tab icon
 │   ├── js/
 │   │   ├── api.js           # API call utilities for proxy requests, streaming, and chat endpoint with optional AbortSignal forwarding
-│   │   ├── app.js           # Main entry point wiring all modules together; send button toggles between send and stop/cancel
+│   │   ├── app.js           # Main entry point wiring all modules together; send button toggles between send and stop/cancel; trace log panel wiring
 │   │   ├── chat.js          # Chat: send messages, streaming responses, thinking blocks, tool call tracking by tool_call_id, metrics, file attachments (abortable), copy button, stop/cancel button with partial-content preservation
 │   │   ├── connection.js    # Connection management: connect/disconnect (aborts active requests), status updates, heartbeat monitoring
 │   │   ├── history.js       # Chat session history: render, continue (aborts active requests), delete sessions (aborts if current)
 │   │   ├── models.js        # Model management: list, refresh, load, unload models with LM Studio native API
-│   │   ├── state.js         # State management: localStorage persistence for settings/session history; runtime abort controller and reason tracking
+│   │   ├── state.js         # State management: localStorage persistence for settings/session history; runtime abort controller and reason tracking; theme management with applyTheme
+│   │   ├── trace.js         # Live trace log panel: SSE streaming from /api/trace-logs, auto-scroll, pause/resume, exponential backoff reconnect
 │   │   └── ui.js            # UI utilities: toast notifications, formatting, auto-resize, scroll, metrics display
-│   └── index.html          # Main HTML page with sidebar, chat area, and all UI elements
+│   └── index.html          # Main HTML page with sidebar (Connection, Models, History, Settings, Trace Log), chat area, and toast container
 ├── tests/
 │   ├── __init__.py          # Empty test package init
 │   ├── test_agent.py        # Unit tests for ChatAgent message conversion, streaming (text, thinking, tool calls), tool_call_id-based result matching, and cooperative cancellation
@@ -61,6 +67,9 @@
 
 ### Server Restart
 `pkill -f uvicorn` is unreliable — always use `kill -9 <pid>` (from `ps aux | grep uvicorn`) to forcefully terminate before restarting.
+
+### Theme Architecture
+CSS is split into a theme-agnostic `base.css` (layout, reset, components) and swappable theme files (`theme-cyberpunk.css`, `theme-light.css`, `theme-warm.css`) that define CSS variables for colors, fonts, and accents. The frontend loads `base.css` always and swaps the active theme stylesheet at runtime via `applyTheme()` in `state.js`. Theme preference persists in `localStorage`.
 
 ### Pydantic AI Streaming Semantics
 
