@@ -2,7 +2,7 @@
 
 Handles the entire tool call loop automatically:
 1. Send to LLM → detect tool calls → execute tools → send results back → get final response
-2. Streams clean text deltas to the frontend
+2. Streams normalized content, thinking, and tool lifecycle events to the frontend
 
 The frontend sends OpenAI-compatible messages; this module converts them
 to Pydantic AI's internal format and runs the agent.
@@ -15,15 +15,22 @@ import json
 import logging
 from typing import Any, AsyncIterable
 
-from pydantic_ai import Agent
+from pydantic_ai import Agent, AgentRunResultEvent
 from pydantic_ai.messages import (
+    FunctionToolCallEvent,
+    FunctionToolResultEvent,
     ImageUrl,
     ModelMessage,
     ModelRequest,
     ModelResponse,
+    PartDeltaEvent,
+    PartEndEvent,
+    PartStartEvent,
+    RetryPromptPart,
     SystemPromptPart,
     TextContent,
     TextPart,
+    TextPartDelta,
     ThinkingPart,
     ThinkingPartDelta,
     ToolCallPart,
@@ -178,6 +185,32 @@ def _openai_messages_to_pai_messages(
 # --- Chat agent ---
 
 
+def _tool_value_to_text(value: Any) -> str:
+    """Return a readable string for a tool result of any supported shape.
+
+    Pydantic AI tools may return strings, mappings, sequences, or multimodal
+    content. The browser's tool card is deliberately text-only, so normalize
+    structured values here instead of relying on JSON serialization of the
+    Pydantic AI dataclasses.
+    """
+    if isinstance(value, str):
+        return value
+    if value is None:
+        return ""
+
+    def _json_default(item: Any) -> Any:
+        if hasattr(item, "model_dump"):
+            return item.model_dump(mode="json")
+        if hasattr(item, "__dict__"):
+            return vars(item)
+        return str(item)
+
+    try:
+        return json.dumps(value, ensure_ascii=False, default=_json_default)
+    except (TypeError, ValueError):
+        return str(value)
+
+
 class ChatAgent:
     """Pydantic AI Agent wrapper for chat with tool call support.
 
@@ -199,8 +232,8 @@ class ChatAgent:
         system_prompt: str = "",
         tool_call_enabled: bool = False,
         cancel_event: asyncio.Event | None = None,
-    ) -> AsyncIterable[str]:
-        """Stream chat response with optional tool calls.
+    ) -> AsyncIterable[dict[str, Any]]:
+        """Stream structured chat events with optional tool calls.
 
         The agent handles tool calls automatically:
         1. Sends messages to LLM
@@ -219,7 +252,8 @@ class ChatAgent:
                 is emitted instead of usage stats.
 
         Yields:
-            Text deltas as they are generated, followed by usage metadata.
+            Structured content, thinking, tool lifecycle, cancellation, error,
+            and usage payloads for the SSE endpoint.
         """
         log = trace_logger.logger
         log.debug(
@@ -265,13 +299,40 @@ class ChatAgent:
                 ModelRequest(parts=[SystemPromptPart(content=combined_system)]),
             )
 
-        # Run agent with streaming
-        # Declare tracking variables before try so finally can access them
-        # even if __aenter__ raises (e.g., connection error)
-        saw_thinking = False
-        pending_tool_calls: dict[str, dict] = {}
-        prev_text: str = ""
+        # `run_stream_events()` is the event-level API. Unlike
+        # `run_stream().stream_response()`, it includes every model turn and
+        # the internal function-tool loop. It also gives us true deltas for
+        # thinking and text, rather than repeatedly exposing accumulated
+        # `ModelResponse` snapshots.
+        thinking_open = False
+        pending_tool_calls: dict[str, dict[str, Any]] = {}
+        run_result = None
         cancelled = False
+
+        def finish_thinking() -> dict[str, bool] | None:
+            """Return a boundary event once for the active thinking part."""
+            nonlocal thinking_open
+            if not thinking_open:
+                return None
+            thinking_open = False
+            return {"thinking_done": True}
+
+        def orphaned_tool_events() -> list[dict[str, Any]]:
+            """Create error events for calls without a matching result."""
+            events = []
+            for tc_id, tc_info in pending_tool_calls.items():
+                log.warning(
+                    f"ORPHANED_TOOL_CALL id={tc_id} name={tc_info['name']}"
+                )
+                events.append({
+                    "tool_result": {
+                        "tool_call_id": tc_id,
+                        "name": tc_info["name"],
+                        "status": "error",
+                        "result": "Tool execution did not complete",
+                    }
+                })
+            return events
 
         try:
             # If already cancelled before starting, emit and stop without
@@ -280,102 +341,134 @@ class ChatAgent:
                 yield {"__cancelled__": True}
                 return
 
-            async with agent.run_stream(
+            async with agent.run_stream_events(
                 user_prompt=None,
                 message_history=pai_messages,
                 capabilities=[Thinking()],
-            ) as result:
-                async for response in result.stream_response(debounce_by=0.05):
-                    for part in response.parts:
-                        pname = type(part).__name__
-                        if isinstance(part, ToolCallPart):
-                            # Tool call detected - emit executing event
-                            log.debug(f"PART: {pname} tool={part.tool_name} id={part.tool_call_id} args={part.args!r:.60s}")
-                            pending_tool_calls[part.tool_call_id] = {
-                                "name": part.tool_name,
-                                "args": part.args,
-                            }
-                            yield {
-                                "tool_call": {
-                                    "tool_call_id": part.tool_call_id,
-                                    "name": part.tool_name,
-                                    "args": part.args,
-                                    "status": "executing",
-                                }
-                            }
-                        elif isinstance(part, ToolReturnPart):
-                            # Tool result from Pydantic AI's internal execution.
-                            # Match by tool_call_id to find the corresponding pending call.
-                            log.debug(f"PART: {pname} id={part.tool_call_id} content={part.content!r:.60s}")
-                            tc_id = part.tool_call_id
-                            if tc_id in pending_tool_calls:
-                                tc = pending_tool_calls.pop(tc_id)
-                                yield {
-                                    "tool_result": {
-                                        "tool_call_id": tc_id,
-                                        "name": tc["name"],
-                                        "status": "done",
-                                        "result": part.content,
-                                    }
-                                }
-                        elif isinstance(part, ThinkingPartDelta):
-                            log.debug(f"PART: {pname} delta={part.content_delta!r:.60s}")
-                            saw_thinking = True
-                            delta = part.content_delta
-                            if delta:
-                                yield {"thinking": delta}
-                        elif isinstance(part, ThinkingPart):
-                            log.debug(f"PART: {pname} content={part.content!r:.60s}")
-                            saw_thinking = True
-                            # ThinkingPart.content is FULL accumulated text (like TextPart)
-                            # Emit thinking_full for every ThinkingPart so frontend updates in real-time
+            ) as events:
+                async for event in events:
+                    if isinstance(event, PartStartEvent):
+                        part = event.part
+                        if isinstance(part, ThinkingPart):
+                            thinking_open = True
+                            # A PartStartEvent contains only the initial
+                            # content for this part. Subsequent content is
+                            # delivered as ThinkingPartDelta, so it is safe
+                            # to emit this once without repetition.
                             if part.content:
-                                yield {"thinking_full": part.content}
+                                log.debug(
+                                    f"PART: ThinkingPartStart chars={len(part.content)}"
+                                )
+                                yield {"thinking": part.content}
                         elif isinstance(part, TextPart):
-                            # TextPart.content is FULL accumulated text.
-                            # Emit only the incremental delta so each SSE event
-                            # represents new text (1+ tokens) for accurate metrics.
+                            if (thinking_done := finish_thinking()) is not None:
+                                yield thinking_done
                             if part.content:
-                                delta = part.content[len(prev_text):]
-                                prev_text = part.content
-                                if delta:
-                                    yield {"content": delta}
+                                yield {"content": part.content}
+                        # ToolCallPart starts are deliberately not emitted:
+                        # the later FunctionToolCallEvent is the single,
+                        # validated lifecycle event for a function tool.
 
-                    # Check for cancellation after each response batch.
-                    # Breaking here exits the async for; the async with
-                    # __aexit__ then cancels the underlying HTTP stream.
-                    if cancel_event and cancel_event.is_set():
-                        cancelled = True
-                        break
+                    elif isinstance(event, PartDeltaEvent):
+                        delta = event.delta
+                        if isinstance(delta, ThinkingPartDelta):
+                            thinking_open = True
+                            if delta.content_delta:
+                                log.debug(
+                                    f"PART: ThinkingPartDelta delta={delta.content_delta!r:.60s}"
+                                )
+                                yield {"thinking": delta.content_delta}
+                        elif isinstance(delta, TextPartDelta):
+                            if (thinking_done := finish_thinking()) is not None:
+                                yield thinking_done
+                            if delta.content_delta:
+                                yield {"content": delta.content_delta}
+                        # ToolCallPartDelta events assemble a call. They are
+                        # not sent to the browser because their args may be
+                        # incomplete; FunctionToolCallEvent follows once the
+                        # call is ready to execute.
 
-                if not cancelled:
-                    # Emit thinking_done at end of stream if thinking was seen
-                    if saw_thinking:
-                        yield {"thinking_done": True}
+                    elif isinstance(event, PartEndEvent):
+                        # Do not emit `event.part.content` here: PartEndEvent
+                        # contains the full accumulated thinking text and
+                        # logging/sending it would reintroduce repetition.
+                        if isinstance(event.part, ThinkingPart):
+                            if (thinking_done := finish_thinking()) is not None:
+                                yield thinking_done
 
-                    # Handle orphaned tool calls (tool was called but result never arrived)
-                    for tc_id, tc_info in pending_tool_calls.items():
-                        log.warning(
-                            f"ORPHANED_TOOL_CALL id={tc_id} name={tc_info['name']}"
+                    elif isinstance(event, FunctionToolCallEvent):
+                        call = event.part
+                        if (thinking_done := finish_thinking()) is not None:
+                            yield thinking_done
+
+                        log.debug(
+                            f"PART: FunctionToolCallEvent tool={call.tool_name} "
+                            f"id={call.tool_call_id} args={call.args!r:.120s}"
+                        )
+                        pending_tool_calls[call.tool_call_id] = {
+                            "name": call.tool_name,
+                            "args": call.args,
+                        }
+                        yield {
+                            "tool_call": {
+                                "tool_call_id": call.tool_call_id,
+                                "name": call.tool_name,
+                                "args": call.args,
+                                "status": "executing",
+                            }
+                        }
+
+                    elif isinstance(event, FunctionToolResultEvent):
+                        part = event.part
+                        tc_id = part.tool_call_id
+                        tc_info = pending_tool_calls.pop(tc_id, {})
+                        tool_name = getattr(part, "tool_name", None) or tc_info.get("name", "tool")
+                        result_text = _tool_value_to_text(getattr(part, "content", None))
+                        is_error = isinstance(part, RetryPromptPart) or (
+                            isinstance(part, ToolReturnPart)
+                            and part.outcome != "success"
+                        )
+                        log.debug(
+                            f"PART: FunctionToolResultEvent tool={tool_name} "
+                            f"id={tc_id} status={'error' if is_error else 'done'}"
                         )
                         yield {
                             "tool_result": {
                                 "tool_call_id": tc_id,
-                                "name": tc_info["name"],
-                                "status": "error",
-                                "result": "Tool execution did not complete",
+                                "name": tool_name,
+                                "status": "error" if is_error else "done",
+                                "result": result_text,
                             }
                         }
 
-            # Exiting the async with block via break triggers __aexit__, which
-            # cancels the upstream HTTP stream. Emit a cancellation marker so
-            # the frontend can distinguish cancellation from errors.
+                    elif isinstance(event, AgentRunResultEvent):
+                        run_result = event.result
+
+                    # FinalResultEvent and other event types are intentionally
+                    # ignored; they mark graph state, not user-visible output.
+
+                    # Check cancellation after each event. Exiting the event
+                    # context cancels the background Pydantic AI run and its
+                    # upstream HTTP stream.
+                    if cancel_event and cancel_event.is_set():
+                        cancelled = True
+                        break
+
             if cancelled:
                 yield {"__cancelled__": True}
                 return
 
-            # Log usage
-            usage = result.usage
+            if (thinking_done := finish_thinking()) is not None:
+                yield thinking_done
+
+            for orphaned in orphaned_tool_events():
+                yield orphaned
+
+            if run_result is None:
+                raise RuntimeError("Agent stream ended without a run result")
+
+            # Log usage only after the complete agent/tool loop has finished.
+            usage = run_result.usage
             log.debug(
                 f"CHAT_COMPLETE model={model} "
                 f"input_tokens={usage.input_tokens} "
@@ -383,7 +476,6 @@ class ChatAgent:
                 f"total_tokens={usage.total_tokens}"
             )
 
-            # Yield usage info as structured data
             yield {
                 "__usage__": {
                     "prompt_tokens": usage.input_tokens,
@@ -392,20 +484,12 @@ class ChatAgent:
                 },
             }
         except Exception as e:
+            # Send tool-level failures before the stream-level error so the
+            # frontend can update the visible card before it handles the
+            # terminal error event.
+            for orphaned in orphaned_tool_events():
+                yield orphaned
             log.error(f"CHAT_ERROR: {e}")
             yield {"__error__": str(e)}
-            # Handle orphaned tool calls on error (stream was interrupted)
-            for tc_id, tc_info in pending_tool_calls.items():
-                log.warning(
-                    f"ORPHANED_TOOL_CALL id={tc_id} name={tc_info['name']}"
-                )
-                yield {
-                    "tool_result": {
-                        "tool_call_id": tc_id,
-                        "name": tc_info["name"],
-                        "status": "error",
-                        "result": "Tool execution did not complete",
-                    }
-                }
         finally:
             pending_tool_calls.clear()

@@ -2,8 +2,8 @@
  * Chat functionality: send messages, handle streaming responses, render messages,
  * track metrics, file attachments.
  *
- * Tool calls are handled entirely by Pydantic AI on the backend.
- * The frontend only sends chat requests and receives clean text streams.
+ * Pydantic AI runs the tool loop on the backend and streams normalized
+ * content, thinking, and tool lifecycle events to this module.
  */
 
 import { state, saveSettings, saveCurrentSession, saveSessionHistory, abortActiveRequest } from "./state.js";
@@ -238,7 +238,7 @@ function buildMultimodalContent(text, attachments) {
 
 /**
  * Send a message and receive a streaming response via Pydantic AI.
- * The backend handles tool calls automatically.
+ * The backend handles the tool loop and streams normalized lifecycle events.
  * @param {Object} dom - DOM element references.
  */
 export async function sendMessage(dom) {
@@ -292,6 +292,7 @@ export async function sendMessage(dom) {
     let thinkingContentEl = null;
     let thinkingSummaryEl = null;
     let thinkingSeen = false;   // tracks if any thinking events arrived
+    const thinkingWrappers = [];
     const toolCallMap = new Map(); // tool_call_id -> DOM element
     let assistantEl = null;
     let contentEl = null;
@@ -338,7 +339,38 @@ export async function sendMessage(dom) {
         } else {
             dom.chatMessages.appendChild(thinkingWrapper);
         }
+        thinkingWrappers.push(thinkingWrapper);
         scrollToBottom(dom.chatMessages);
+    }
+
+    /**
+     * Start a new thinking block after a completed model turn. Tool loops can
+     * produce reasoning before and after a tool call; keeping separate blocks
+     * preserves the visible order of thinking → tool → thinking → answer.
+     */
+    function beginThinkingBlock() {
+        if (thinkingDone) {
+            thinkingContent = "";
+            thinkingWrapper = null;
+            thinkingEl = null;
+            thinkingContentEl = null;
+            thinkingSummaryEl = null;
+            thinkingDone = false;
+        }
+        thinkingSeen = true;
+        if (!thinkingEl) createThinkingBlock();
+    }
+
+    /**
+     * Remove every thinking block created for this response.
+     */
+    function removeThinkingBlocks() {
+        for (const wrapper of thinkingWrappers) wrapper.remove();
+        thinkingWrappers.length = 0;
+        thinkingWrapper = null;
+        thinkingEl = null;
+        thinkingContentEl = null;
+        thinkingSummaryEl = null;
     }
 
     /**
@@ -356,6 +388,16 @@ export async function sendMessage(dom) {
      * Create a tool call element and insert before the assistant placeholder.
      */
     function createToolCallElement(toolCallId, name, args) {
+        // A provider may expose a call more than once while its streamed
+        // arguments are assembled. Keep one visible card per ID and update
+        // it in place rather than leaving duplicate "executing" cards.
+        const existing = toolCallMap.get(toolCallId);
+        if (existing) {
+            const argsText = formatToolArguments(args);
+            existing.argsEl.textContent = argsText;
+            return existing.el;
+        }
+
         const el = document.createElement("div");
         el.className = "tool-call";
 
@@ -383,11 +425,7 @@ export async function sendMessage(dom) {
 
         const argsEl = document.createElement("div");
         argsEl.className = "tool-call-args";
-        try {
-            argsEl.textContent = typeof args === "string" ? JSON.stringify(JSON.parse(args), null, 2) : args;
-        } catch {
-            argsEl.textContent = args;
-        }
+        argsEl.textContent = formatToolArguments(args);
         content.appendChild(argsEl);
 
         // Result placeholder (hidden until done)
@@ -406,7 +444,7 @@ export async function sendMessage(dom) {
         }
 
         // Store reference for later update (keyed by tool_call_id)
-        toolCallMap.set(toolCallId, { el, statusEl, resultEl });
+        toolCallMap.set(toolCallId, { el, statusEl, argsEl, resultEl });
         scrollToBottom(dom.chatMessages);
         return el;
     }
@@ -424,13 +462,29 @@ export async function sendMessage(dom) {
         entry.statusEl.className = `tool-call-status ${status}`;
         entry.statusEl.textContent = status;
 
-        if (result) {
+        if (result !== null && result !== undefined && result !== "") {
             entry.resultEl.style.display = "block";
-            entry.resultEl.textContent = result;
+            entry.resultEl.textContent = typeof result === "string"
+                ? result
+                : JSON.stringify(result, null, 2);
         }
 
         toolCallMap.delete(toolCallId);
         scrollToBottom(dom.chatMessages);
+    }
+
+    /**
+     * Normalize tool arguments for a readable, stable card representation.
+     * Providers may send JSON text, an object, or null.
+     */
+    function formatToolArguments(args) {
+        if (args === null || args === undefined || args === "") return "{}";
+        if (typeof args !== "string") return JSON.stringify(args, null, 2);
+        try {
+            return JSON.stringify(JSON.parse(args), null, 2);
+        } catch {
+            return args;
+        }
     }
 
     try {
@@ -538,7 +592,18 @@ export async function sendMessage(dom) {
                     try {
                         const parsed = JSON.parse(payload);
 
-                        // Check for error events
+                        // Server-side cancellation is a terminal stream state.
+                        // Do not treat it as a successful completion or save a
+                        // partial assistant response in the normal path.
+                        if (parsed.__cancelled__) {
+                            streamDone = true;
+                            const cancellationError = new DOMException("The chat request was cancelled", "AbortError");
+                            throw cancellationError;
+                        }
+
+                        // Check for error events. Tool-result events are sent
+                        // before this marker by the backend, so visible cards
+                        // retain their error state.
                         if (parsed.__error__) {
                             throw new Error(parsed.__error__);
                         }
@@ -555,9 +620,8 @@ export async function sendMessage(dom) {
                         // Thinking content update
                         if (parsed.thinking !== undefined) {
                             if (typeof parsed.thinking === "string" && parsed.thinking.length > 0) {
-                                thinkingSeen = true;
+                                beginThinkingBlock();
                                 thinkingContent += parsed.thinking;
-                                if (!thinkingEl) createThinkingBlock();
                                 if (thinkingContentEl) {
                                     thinkingContentEl.textContent = thinkingContent;
                                     scrollToBottom(dom.chatMessages);
@@ -567,9 +631,8 @@ export async function sendMessage(dom) {
                         }
                         if (parsed.thinking_full !== undefined) {
                             if (typeof parsed.thinking_full === "string" && parsed.thinking_full.length > 0) {
-                                thinkingSeen = true;
+                                beginThinkingBlock();
                                 thinkingContent = parsed.thinking_full;
-                                if (!thinkingEl) createThinkingBlock();
                                 if (thinkingContentEl) {
                                     thinkingContentEl.textContent = thinkingContent;
                                     scrollToBottom(dom.chatMessages);
@@ -601,7 +664,7 @@ export async function sendMessage(dom) {
                                 if (dom.streamingIndicatorText) {
                                     dom.streamingIndicatorText.textContent = `Running ${tc.name.replace(/_/g, " ")}...`;
                                 }
-                                createToolCallElement(tc.tool_call_id, tc.name, tc.args || "");
+                                createToolCallElement(tc.tool_call_id, tc.name, tc.args ?? "{}");
                             }
                             continue;
                         }
@@ -661,9 +724,11 @@ export async function sendMessage(dom) {
         // Hide streaming indicator
         if (dom.streamingIndicator) dom.streamingIndicator.style.display = "none";
 
-        // Finalize any pending tool calls that weren't resolved
+        // A normal end without a matching tool result is not a successful
+        // execution. Keep the card visible and make the incomplete state
+        // explicit instead of silently marking it done.
         for (const [toolCallId] of toolCallMap) {
-            finalizeToolCall(toolCallId, "done", null);
+            finalizeToolCall(toolCallId, "error", "Tool execution did not complete");
         }
         toolCallMap.clear();
 
@@ -703,7 +768,7 @@ export async function sendMessage(dom) {
         if (isAbort) {
             // Finalize any pending tool calls that weren't resolved
             for (const [toolCallId] of toolCallMap) {
-                finalizeToolCall(toolCallId, "done", null);
+                finalizeToolCall(toolCallId, "error", "Tool execution cancelled");
             }
             toolCallMap.clear();
 
@@ -743,14 +808,14 @@ export async function sendMessage(dom) {
             } else {
                 // No partial content to keep, or the chat was replaced: remove
                 // the now-orphaned placeholder elements.
-                if (thinkingWrapper) thinkingWrapper.remove();
+                removeThinkingBlocks();
                 if (assistantEl) assistantEl.remove();
             }
 
             showToast("Cancelled", "info");
         } else {
             // Clean up thinking block, assistant placeholder, and tool calls on error
-            if (thinkingWrapper) thinkingWrapper.remove();
+            removeThinkingBlocks();
             if (assistantEl) assistantEl.remove();
             for (const [, entry] of toolCallMap) {
                 entry.el.remove();

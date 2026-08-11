@@ -433,6 +433,48 @@ class TestChatEndpoint(unittest.TestCase):
             self.assertIn('"content": "The answer is 42."', content)
             self.assertIn('"__usage__"', content)
 
+    def test_chat_forwards_tool_lifecycle_events(self):
+        """ARRANGE: Agent emits tool call and result events
+        ACT: POST /api/chat
+        ASSERT: Both lifecycle payloads reach the SSE client unchanged"""
+        from backend.agent import ChatAgent
+
+        with patch.object(ChatAgent, "chat") as mock_chat:
+            async def mock_chat_generator(**kwargs):
+                yield {
+                    "tool_call": {
+                        "tool_call_id": "call_1",
+                        "name": "web_search",
+                        "args": {"query": "Python"},
+                        "status": "executing",
+                    }
+                }
+                yield {
+                    "tool_result": {
+                        "tool_call_id": "call_1",
+                        "name": "web_search",
+                        "status": "done",
+                        "result": "Python result",
+                    }
+                }
+                yield {"content": "Here is the answer."}
+                yield {"__usage__": {"prompt_tokens": 1, "completion_tokens": 2, "total_tokens": 3}}
+
+            mock_chat.return_value = mock_chat_generator()
+
+            resp = self.client.post("/api/chat", json={
+                "model": "test-model",
+                "messages": [{"role": "user", "content": "Search"}],
+                "toolCallEnabled": True,
+            })
+
+            self.assertEqual(resp.status_code, 200)
+            content = resp.content.decode()
+            self.assertIn('"tool_call"', content)
+            self.assertIn('"tool_result"', content)
+            self.assertIn('"call_1"', content)
+            self.assertIn('"Python result"', content)
+
 
 class TestTools(unittest.TestCase):
     """SPEC: Toggle web search tool calls."""

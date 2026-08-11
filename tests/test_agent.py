@@ -22,12 +22,18 @@ from backend.agent import (
     _openai_messages_to_pai_messages,
     _convert_user_content,
 )
+from pydantic_ai import AgentRunResultEvent
 from pydantic_ai.messages import (
     ModelRequest,
     ModelResponse,
+    PartDeltaEvent,
+    PartEndEvent,
+    PartStartEvent,
+    FunctionToolCallEvent,
+    FunctionToolResultEvent,
     UserPromptPart,
-    SystemPromptPart,
     TextPart,
+    TextPartDelta,
     TextContent,
     ThinkingPart,
     ThinkingPartDelta,
@@ -173,11 +179,9 @@ class TestChatAgentStreaming(unittest.TestCase):
     """
 
     def test_streams_text_and_usage(self):
-        """ARRANGE: ChatAgent with mocked Pydantic AI agent
+        """ARRANGE: Event stream with text start, delta, and run result
         ACT: Run chat
-        ASSERT: Yields thinking_done, content objects, then usage metadata
-
-        Pydantic AI's stream_response() yields ModelResponse objects with parts."""
+        ASSERT: Text deltas and usage metadata are emitted once."""
         agent = ChatAgent("http://localhost:1234")
 
         async def _run():
@@ -190,31 +194,27 @@ class TestChatAgentStreaming(unittest.TestCase):
                     input_tokens=12, output_tokens=3, total_tokens=15
                 )
 
-                # stream_response() yields ModelResponse objects with parts.
-                # TextPart.content is FULL accumulated text (Pydantic AI semantics).
-                # Backend converts to incremental deltas for SSE events.
-                async def mock_stream_iter(debounce_by=0.05):
-                    yield ModelResponse(parts=[TextPart(content="Hello")])
-                    yield ModelResponse(parts=[TextPart(content="Hello!")])
+                async def mock_events():
+                    yield PartStartEvent(index=0, part=TextPart(content="Hello"))
+                    yield PartDeltaEvent(index=0, delta=TextPartDelta(content_delta="!"))
+                    yield PartEndEvent(index=0, part=TextPart(content="Hello!"))
+                    yield AgentRunResultEvent(result=mock_result)
 
-                mock_result.stream_response = mock_stream_iter
                 mock_cm = MagicMock()
-                mock_cm.__aenter__ = AsyncMock(return_value=mock_result)
+                mock_cm.__aenter__ = AsyncMock(return_value=mock_events())
                 mock_cm.__aexit__ = AsyncMock(return_value=False)
-                mock_agent.run_stream = MagicMock(return_value=mock_cm)
+                mock_agent.run_stream_events = MagicMock(return_value=mock_cm)
                 mock_cls.return_value = mock_agent
 
-                async for text in agent.chat(
+                async for payload in agent.chat(
                     model="test-model",
                     messages=[{"role": "user", "content": "Hi"}],
                     tool_call_enabled=False,
                 ):
-                    collected.append(text)
+                    collected.append(payload)
 
-            # Backend emits incremental deltas: first "Hello", then "!" (the new portion)
             self.assertEqual(collected[0], {"content": "Hello"})
             self.assertEqual(collected[1], {"content": "!"})
-            # Usage metadata (thinking_done only emitted when thinking was seen)
             self.assertEqual(collected[2]["__usage__"]["prompt_tokens"], 12)
             self.assertEqual(collected[2]["__usage__"]["completion_tokens"], 3)
             self.assertEqual(collected[2]["__usage__"]["total_tokens"], 15)
@@ -222,7 +222,7 @@ class TestChatAgentStreaming(unittest.TestCase):
         asyncio.run(_run())
 
     def test_error_surfaced_in_stream(self):
-        """ARRANGE: ChatAgent where agent raises
+        """ARRANGE: Event-stream context raises while entering
         ACT: Run chat
         ASSERT: Error surfaced as {"__error__": "..."} in stream"""
         agent = ChatAgent("http://localhost:1234")
@@ -237,15 +237,15 @@ class TestChatAgentStreaming(unittest.TestCase):
                     side_effect=ConnectionError("Connection refused")
                 )
                 mock_cm.__aexit__ = AsyncMock(return_value=False)
-                mock_agent.run_stream = MagicMock(return_value=mock_cm)
+                mock_agent.run_stream_events = MagicMock(return_value=mock_cm)
                 mock_cls.return_value = mock_agent
 
-                async for text in agent.chat(
+                async for payload in agent.chat(
                     model="test-model",
                     messages=[{"role": "user", "content": "Hi"}],
                     tool_call_enabled=False,
                 ):
-                    collected.append(text)
+                    collected.append(payload)
 
             self.assertTrue(len(collected) > 0)
             self.assertIn("__error__", collected[0])
@@ -267,14 +267,14 @@ class TestChatAgentStreaming(unittest.TestCase):
                     input_tokens=10, output_tokens=5, total_tokens=15
                 )
 
-                async def mock_stream_iter(debounce_by=0.05):
-                    yield ModelResponse(parts=[TextPart(content="Response")])
+                async def mock_events():
+                    yield PartStartEvent(index=0, part=TextPart(content="Response"))
+                    yield AgentRunResultEvent(result=mock_result)
 
-                mock_result.stream_response = mock_stream_iter
                 mock_cm = MagicMock()
-                mock_cm.__aenter__ = AsyncMock(return_value=mock_result)
+                mock_cm.__aenter__ = AsyncMock(return_value=mock_events())
                 mock_cm.__aexit__ = AsyncMock(return_value=False)
-                mock_agent.run_stream = MagicMock(return_value=mock_cm)
+                mock_agent.run_stream_events = MagicMock(return_value=mock_cm)
                 mock_cls.return_value = mock_agent
 
                 async for _ in agent.chat(
@@ -303,14 +303,14 @@ class TestChatAgentStreaming(unittest.TestCase):
                     input_tokens=10, output_tokens=5, total_tokens=15
                 )
 
-                async def mock_stream_iter(debounce_by=0.05):
-                    yield ModelResponse(parts=[TextPart(content="Response")])
+                async def mock_events():
+                    yield PartStartEvent(index=0, part=TextPart(content="Response"))
+                    yield AgentRunResultEvent(result=mock_result)
 
-                mock_result.stream_response = mock_stream_iter
                 mock_cm = MagicMock()
-                mock_cm.__aenter__ = AsyncMock(return_value=mock_result)
+                mock_cm.__aenter__ = AsyncMock(return_value=mock_events())
                 mock_cm.__aexit__ = AsyncMock(return_value=False)
-                mock_agent.run_stream = MagicMock(return_value=mock_cm)
+                mock_agent.run_stream_events = MagicMock(return_value=mock_cm)
                 mock_cls.return_value = mock_agent
 
                 async for _ in agent.chat(
@@ -326,9 +326,9 @@ class TestChatAgentStreaming(unittest.TestCase):
         asyncio.run(_run())
 
     def test_streams_thinking_tokens(self):
-        """ARRANGE: ChatAgent with model producing thinking tokens
+        """ARRANGE: Event stream with incremental thinking and text
         ACT: Run chat
-        ASSERT: Yields thinking deltas, thinking_done marker, then content"""
+        ASSERT: Thinking is emitted once per delta and never as a repeated full snapshot."""
         agent = ChatAgent("http://localhost:1234")
 
         async def _run():
@@ -341,40 +341,33 @@ class TestChatAgentStreaming(unittest.TestCase):
                     input_tokens=10, output_tokens=5, total_tokens=15
                 )
 
-                async def mock_stream_iter(debounce_by=0.05):
-                    # Thinking deltas
-                    yield ModelResponse(parts=[ThinkingPartDelta(content_delta="Let me think")])
-                    yield ModelResponse(parts=[ThinkingPartDelta(content_delta=" about this")])
-                    # Thinking complete
-                    yield ModelResponse(parts=[ThinkingPart(content="Let me think about this")])
-                    # Regular text response
-                    yield ModelResponse(parts=[TextPart(content="The answer is 42.")])
+                async def mock_events():
+                    yield PartStartEvent(index=0, part=ThinkingPart(content="Let me think"))
+                    yield PartDeltaEvent(index=0, delta=ThinkingPartDelta(content_delta=" about this"))
+                    yield PartEndEvent(index=0, part=ThinkingPart(content="Let me think about this"), next_part_kind="text")
+                    yield PartStartEvent(index=1, part=TextPart(content="The answer is 42."))
+                    yield AgentRunResultEvent(result=mock_result)
 
-                mock_result.stream_response = mock_stream_iter
                 mock_cm = MagicMock()
-                mock_cm.__aenter__ = AsyncMock(return_value=mock_result)
+                mock_cm.__aenter__ = AsyncMock(return_value=mock_events())
                 mock_cm.__aexit__ = AsyncMock(return_value=False)
-                mock_agent.run_stream = MagicMock(return_value=mock_cm)
+                mock_agent.run_stream_events = MagicMock(return_value=mock_cm)
                 mock_cls.return_value = mock_agent
 
-                async for text in agent.chat(
+                async for payload in agent.chat(
                     model="test-model",
                     messages=[{"role": "user", "content": "What is 6*7?"}],
                     tool_call_enabled=False,
                 ):
-                    collected.append(text)
+                    collected.append(payload)
 
-            # Verify thinking deltas, thinking_done, content, and usage
-            thinking_deltas = [c for c in collected if "thinking" in c and "thinking_done" not in c]
+            thinking_deltas = [c for c in collected if c.get("thinking") is not None]
             thinking_done = [c for c in collected if c.get("thinking_done")]
-            contents = [c for c in collected if "content" in c]
+            contents = [c for c in collected if c.get("content") is not None]
             usage = [c for c in collected if "__usage__" in c]
 
-            self.assertEqual(len(thinking_deltas), 2)
-            self.assertEqual(thinking_deltas[0]["thinking"], "Let me think")
-            self.assertEqual(thinking_deltas[1]["thinking"], " about this")
+            self.assertEqual([c["thinking"] for c in thinking_deltas], ["Let me think", " about this"])
             self.assertEqual(len(thinking_done), 1)
-            self.assertEqual(thinking_done[0]["thinking_done"], True)
             self.assertEqual(len(contents), 1)
             self.assertEqual(contents[0]["content"], "The answer is 42.")
             self.assertEqual(len(usage), 1)
@@ -382,11 +375,9 @@ class TestChatAgentStreaming(unittest.TestCase):
         asyncio.run(_run())
 
     def test_tool_call_streams_result(self):
-        """ARRANGE: ChatAgent with model that requests tool calls
-        ACT: Run chat with tool_call_enabled=True, mock stream_response to yield
-             ToolCallPart, then ToolReturnPart, then TextPart
-        ASSERT: Stream includes tool_call with tool_call_id, tool_result with
-                result field populated, then content"""
+        """ARRANGE: Event stream with function-tool lifecycle events
+        ACT: Run chat with tool_call_enabled=True
+        ASSERT: Stream includes matching tool call/result events, then content"""
         agent = ChatAgent("http://localhost:1234")
 
         async def _run():
@@ -399,33 +390,26 @@ class TestChatAgentStreaming(unittest.TestCase):
                     input_tokens=20, output_tokens=10, total_tokens=30
                 )
 
-                async def mock_stream_iter(debounce_by=0.05):
-                    # First yield: model requests a tool call
-                    yield ModelResponse(parts=[
-                        ToolCallPart(
-                            tool_name="web_search",
-                            args='{"query": "Python"}',
-                            tool_call_id="call_abc123",
-                        ),
-                    ])
-                    # Second yield: tool result from Pydantic AI's internal execution
-                    yield ModelResponse(parts=[
-                        ToolReturnPart(
-                            tool_name="web_search",
-                            content="Python is a programming language",
-                            tool_call_id="call_abc123",
-                        ),
-                    ])
-                    # Third yield: final text response after tool results
-                    yield ModelResponse(parts=[
-                        TextPart(content="Python is a versatile programming language."),
-                    ])
+                async def mock_events():
+                    yield FunctionToolCallEvent(ToolCallPart(
+                        tool_name="web_search",
+                        args='{"query": "Python"}',
+                        tool_call_id="call_abc123",
+                    ))
+                    yield FunctionToolResultEvent(ToolReturnPart(
+                        tool_name="web_search",
+                        content="Python is a programming language",
+                        tool_call_id="call_abc123",
+                    ))
+                    yield PartStartEvent(index=0, part=TextPart(
+                        content="Python is a versatile programming language."
+                    ))
+                    yield AgentRunResultEvent(result=mock_result)
 
-                mock_result.stream_response = mock_stream_iter
                 mock_cm = MagicMock()
-                mock_cm.__aenter__ = AsyncMock(return_value=mock_result)
+                mock_cm.__aenter__ = AsyncMock(return_value=mock_events())
                 mock_cm.__aexit__ = AsyncMock(return_value=False)
-                mock_agent.run_stream = MagicMock(return_value=mock_cm)
+                mock_agent.run_stream_events = MagicMock(return_value=mock_cm)
                 mock_cls.return_value = mock_agent
 
                 async for text in agent.chat(
@@ -487,14 +471,14 @@ class TestChatAgentStreaming(unittest.TestCase):
                     input_tokens=5, output_tokens=3, total_tokens=8
                 )
 
-                async def mock_stream_iter(debounce_by=0.05):
-                    yield ModelResponse(parts=[TextPart(content="Hi there!")])
+                async def mock_events():
+                    yield PartStartEvent(index=0, part=TextPart(content="Hi there!"))
+                    yield AgentRunResultEvent(result=mock_result)
 
-                mock_result.stream_response = mock_stream_iter
                 mock_cm = MagicMock()
-                mock_cm.__aenter__ = AsyncMock(return_value=mock_result)
+                mock_cm.__aenter__ = AsyncMock(return_value=mock_events())
                 mock_cm.__aexit__ = AsyncMock(return_value=False)
-                mock_agent.run_stream = MagicMock(return_value=mock_cm)
+                mock_agent.run_stream_events = MagicMock(return_value=mock_cm)
                 mock_cls.return_value = mock_agent
 
                 async for text in agent.chat(
@@ -534,22 +518,21 @@ class TestChatAgentStreaming(unittest.TestCase):
                     input_tokens=10, output_tokens=5, total_tokens=15
                 )
 
-                async def mock_stream_iter(debounce_by=0.05):
+                async def mock_events():
                     for i in range(full_part_count):
                         yield_count["n"] += 1
-                        yield ModelResponse(parts=[TextPart(content=f"chunk{i}")])
+                        yield PartStartEvent(index=i, part=TextPart(content=f"chunk{i}"))
                         # Set the cancel event after the first part is yielded.
                         if yield_count["n"] == 1:
                             cancel_event.set()
                         # Let the event loop tick so the cancellation check
-                        # (which runs after each response batch) takes effect.
+                        # (which runs after each event) takes effect.
                         await asyncio.sleep(0)
 
-                mock_result.stream_response = mock_stream_iter
                 mock_cm = MagicMock()
-                mock_cm.__aenter__ = AsyncMock(return_value=mock_result)
+                mock_cm.__aenter__ = AsyncMock(return_value=mock_events())
                 mock_cm.__aexit__ = AsyncMock(return_value=False)
-                mock_agent.run_stream = MagicMock(return_value=mock_cm)
+                mock_agent.run_stream_events = MagicMock(return_value=mock_cm)
                 mock_cls.return_value = mock_agent
 
                 async for payload in agent.chat(
@@ -579,9 +562,9 @@ class TestChatAgentStreaming(unittest.TestCase):
             # The underlying iterator was not fully consumed.
             self.assertLess(yield_count["n"], full_part_count)
 
-            # The run_stream context manager's __aexit__ was triggered by the
-            # break, which is what calls close_stream() on the upstream HTTP
-            # connection — verifying upstream endpoint cancellation fires.
+            # The event stream context's __aexit__ was triggered by the
+            # break, which is what cancels the background agent task and its
+            # upstream HTTP connection.
             mock_cm.__aexit__.assert_called_once()
 
         asyncio.run(_run())

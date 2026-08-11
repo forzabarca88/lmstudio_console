@@ -264,8 +264,8 @@ async def _proxy_stream_response(
 async def chat_endpoint(request: Request):
     """Chat with Pydantic AI Agent.
 
-    Handles tool calls automatically on the backend.
-    Frontend receives clean text stream, no tool call handling needed.
+    Handles tool calls automatically on the backend while forwarding
+    normalized content, thinking, and tool lifecycle events to the frontend.
 
     Request body:
         {
@@ -276,7 +276,8 @@ async def chat_endpoint(request: Request):
             "toolCallEnabled": bool (optional, default false),
         }
 
-    Response: SSE stream of text deltas.
+    Response: SSE stream of structured content, thinking, tool lifecycle,
+    cancellation, error, and usage events.
     """
     body = await request.json()
     target_url = _resolve_target_url(request)
@@ -294,9 +295,9 @@ async def chat_endpoint(request: Request):
     agent = ChatAgent(base_url=target_url, api_key=api_token)
 
     # Set when the client disconnects; the agent's stream loop checks this and
-    # exits cleanly, cancelling the upstream HTTP stream via run_stream's
-    # __aexit__. This is the cooperative-cancellation channel between the
-    # disconnect watcher and the agent.
+    # exits cleanly, cancelling the upstream HTTP stream via the agent event
+    # stream context manager's cleanup. This is the cooperative-cancellation
+    # channel between the disconnect watcher and the agent.
     cancel_event = asyncio.Event()
 
     async def chat_generator() -> AsyncIterable[str]:

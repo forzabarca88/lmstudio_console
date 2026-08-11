@@ -73,17 +73,16 @@ CSS is split into a theme-agnostic `base.css` (layout, reset, components) and sw
 
 ### Pydantic AI Streaming Semantics
 
-When working with Pydantic AI's `stream_response()` in `backend/agent.py` and the SSE parsing in `static/js/chat.js`:
+`backend/agent.py` consumes Pydantic AI's `run_stream_events()` API and translates event-level deltas to SSE; `static/js/chat.js` accumulates incremental `thinking` and `content` payloads.
 
-- **`ThinkingPartDelta.content_delta`** — incremental delta. Backend emits `thinking` events. Frontend **accumulates** with `+=`.
-- **`ThinkingPart.content`** — full accumulated text. Backend emits `thinking_full` events. Frontend **assigns** with `=`.
-- **`TextPart.content`** — full accumulated text in Pydantic AI, but the backend converts it to incremental deltas before emitting `content` SSE events. Frontend **accumulates** with `+=`.
-
-The backend tracks `prev_text` to compute deltas from `TextPart` full text, so each SSE `content` event carries only new text. This enables accurate token counting for metrics.
+- `PartStartEvent(ThinkingPart)` may contain the first thinking text once.
+- `PartDeltaEvent(ThinkingPartDelta)` contains incremental thinking text; emit it as `thinking` and accumulate it with frontend `+=`.
+- `PartStartEvent(TextPart)` and `PartDeltaEvent(TextPartDelta)` are incremental content sources; frontend accumulates `content` with `+=`.
+- Do not emit or log `PartEndEvent` full accumulated content as a new delta; it repeats prior text.
 
 ### Tool Call Streaming
 
-Pydantic AI's `stream_response()` yields both `ToolCallPart` and `ToolReturnPart` events. The backend (`agent.py`) uses a single `async with agent.run_stream()` context manager kept open for the entire session, letting Pydantic AI handle the tool call loop internally. When a `ToolCallPart` is detected, the backend emits a `tool_call` (executing) SSE event and tracks it in `pending_tool_calls`. When a `ToolReturnPart` arrives, the backend emits a `tool_result` (done/error) SSE event and removes it from the tracking dict. Orphaned tool calls (tool was called but result never arrived) emit error events at stream end. The frontend (`chat.js`) renders tool call UI elements and updates status in real-time.
+`run_stream_events()` emits `FunctionToolCallEvent` and `FunctionToolResultEvent` for the internal tool loop. The backend maps these to `tool_call` (executing) and `tool_result` (done/error) SSE events, matched by `tool_call_id`. The frontend keeps one card per ID, updates arguments in place, and renders the result/status lifecycle.
 
 ### Sidebar Collapse
 

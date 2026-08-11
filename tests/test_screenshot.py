@@ -934,14 +934,9 @@ class TestScreenshot(unittest.TestCase):
     def test_tool_call_display(self):
         """Interactive: Tool call lifecycle renders correctly in chat UI.
 
-        Injects tool call UI elements directly using the real chat.js
-        createToolCallElement and finalizeToolCall functions, then verifies
-        the full lifecycle: executing badge -> done badge with result visible
-        -> final assistant message.
-
-        This tests the frontend rendering of tool calls without needing to
-        mock the backend SSE stream (Playwright's route.fulfill doesn't
-        create a proper ReadableStream for SSE).
+        Builds a representative tool-call card for a visual regression of
+        the completed UI. The end-to-end SSE lifecycle is covered by
+        test_tool_call_sse_lifecycle below.
         """
         self._navigate()
         self.page.set_viewport_size({"width": 1280, "height": 800})
@@ -1096,6 +1091,97 @@ class TestScreenshot(unittest.TestCase):
         )
 
         self._screenshot("27_tool_call_complete")
+
+    def test_tool_call_sse_lifecycle(self):
+        """Interactive: real chat SSE events render a tool card lifecycle.
+
+        This exercises sendMessage() and its SSE parser rather than manually
+        constructing the tool-call DOM. It protects the production path that
+        receives FunctionToolCallEvent/FunctionToolResultEvent payloads.
+        """
+        self._navigate()
+        self._enable_chat_ui_for_test_model()
+
+        self.page.evaluate(
+            """async () => {
+                const stateMod = await import('/static/js/state.js');
+                stateMod.state.toolCallEnabled = true;
+                stateMod.state.chatMessages = [];
+
+                const originalFetch = window.fetch;
+                window.__originalChatFetch = originalFetch;
+                const encoder = new TextEncoder();
+                const payloads = [
+                    { tool_call: {
+                        tool_call_id: 'call_sse_1',
+                        name: 'web_search',
+                        args: { query: 'Python' },
+                        status: 'executing',
+                    }},
+                    { tool_result: {
+                        tool_call_id: 'call_sse_1',
+                        name: 'web_search',
+                        status: 'done',
+                        result: 'Python search results',
+                    }},
+                    { content: 'Python is a programming language.' },
+                    { __usage__: {
+                        prompt_tokens: 4,
+                        completion_tokens: 6,
+                        total_tokens: 10,
+                    }},
+                ];
+                const lines = payloads.map(p => `data: ${JSON.stringify(p)}\\n\\n`);
+                window.fetch = (url, options) => {
+                    if (url !== '/api/chat') return originalFetch(url, options);
+                    const stream = new ReadableStream({
+                        start(controller) {
+                            let index = 0;
+                            const push = () => {
+                                if (index >= lines.length) {
+                                    controller.close();
+                                    return;
+                                }
+                                controller.enqueue(encoder.encode(lines[index++]));
+                                setTimeout(push, 35);
+                            };
+                            push();
+                        },
+                    });
+                    return Promise.resolve(new Response(stream, {
+                        status: 200,
+                        headers: { 'Content-Type': 'text/event-stream' },
+                    }));
+                };
+            }"""
+        )
+
+        self.page.fill("#chatInput", "Search for Python")
+        self._click_send_btn()
+
+        self.page.wait_for_selector(
+            ".tool-call .tool-call-status.executing", timeout=10000
+        )
+        self.assertEqual(self.page.locator(".tool-call").count(), 1)
+        self.assertIn(
+            '"query": "Python"',
+            self.page.locator(".tool-call-args").text_content(),
+        )
+
+        self.page.wait_for_selector(
+            ".tool-call .tool-call-status.done", timeout=10000
+        )
+        self.assertIn(
+            "Python search results",
+            self.page.locator(".tool-call-result").text_content(),
+        )
+        self.page.wait_for_selector(
+            ".message.assistant .message-text:has-text('Python is a programming language')",
+            timeout=10000,
+        )
+        self.page.wait_for_selector("#streamingIndicator", state="hidden", timeout=10000)
+        self.assertTrue(self.page.locator("#streamingIndicator").is_hidden())
+        self.assertEqual(self.page.locator(".tool-call").count(), 1)
 
     # --- Theme tests ---
 
