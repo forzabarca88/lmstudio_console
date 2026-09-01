@@ -2,10 +2,11 @@
 
 ## Goal
 
-Build a remote web management dashboard/console for LM Studio via its API.  
-Also include a full featured chat interface which works with all OpenAI compatible endpoints, and connects to the LM Studio endpoint by default.  
+Build a remote web management dashboard/console for LM Studio via its API.
 
-The interface must be modern and responsive, with striking design.  
+Also include a full featured chat interface which works with all OpenAI compatible endpoints, and connects to the LM Studio endpoint by default.
+
+The interface must be modern and responsive, with striking design.
 
 
 ## Technical Requirements
@@ -25,8 +26,8 @@ The interface must be modern and responsive, with striking design.
 ### Testing
 
 - Use `unittest` instead of pytest.
-- Validate functionality of every interface elements which the end user will interact with.
-- Front-end testing must be included, and you should validate the interface using screenshots.
+- Validate functionality of every interface element which the end user will interact with.
+- Front-end testing must be performed (including mobile devices), and you should validate the interface using screenshots.
 
 ## Requirements
 
@@ -47,11 +48,12 @@ The interface must be modern and responsive, with striking design.
 - The button used for sending messages should also double as a stop button for cancelling the current request. Creating a new chat should also implicitly cancel any current in-progress requests. Note that it is **critical** that the request(s) are cancelled on the server/endpoint side, not just on the client/UI side.
 - Allow user to attach files, this is important for multimodal models supporting vision, audio, etc.
 - `3` UI templates/designs which the user can toggle between - the user's preference must be saved so that the template is used for their future sessions. The design language of the templates **must** be very different from each other, and the implementation must be modular and elegant so that more templates can be added in future.
-- Add toggles to allow the user to use agentic functions such as tool calls
+- Add toggles to allow the user to use agentic functions such as tool calls.
 - Required tools:
     - `Web search` tool call so the LLM can search the web.
     - `Open web page` tool call to get contents of specific pages.
     - `Run python code` tool call to execute python code - **ensure that this is done in a safe way to minimise security concerns**.
+- Assume that the application runs within a trusted local home network - access to the console must be unauthenticated.
 
 ### User Feedback 
 
