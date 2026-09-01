@@ -204,6 +204,21 @@ dom.traceToggle.addEventListener("click", () => {
 dom.traceClearBtn.addEventListener("click", () => clearTraceLog(dom));
 dom.tracePauseBtn.addEventListener("click", () => togglePause(dom));
 
+// Surface localStorage persistence problems (quota exceeded): state.js
+// trims session history to fit and warns us; show a toast and refresh the
+// history list so the UI matches what was actually persisted.
+// Rate-limited: saveSettings() fires on every slider tick, so without a
+// cooldown one persistent problem would toast on every event.
+let lastStorageWarningAt = 0;
+window.addEventListener("lmconsole:storage-warning", (e) => {
+    if (e.detail?.historyChanged) renderHistoryList(dom);
+    const now = Date.now();
+    if (now - lastStorageWarningAt > 15000) {
+        lastStorageWarningAt = now;
+        showToast(e.detail?.message || "Storage error", "error");
+    }
+});
+
 /* ═══════════════════════════════════════════
    INIT
    ═══════════════════════════════════════════ */

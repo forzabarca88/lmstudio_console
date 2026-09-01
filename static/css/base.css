@@ -27,8 +27,24 @@ body {
     border-right: 1px solid var(--border);
     display: flex;
     flex-direction: column;
+    /* Containing block for the absolutely-positioned .sidebar-toggle.
+       Deliberately NOT a scroll container — see .sidebar-scroll. */
+    position: relative;
+    /* Defined on the base state so collapse AND expand animate */
+    transition: width 0.25s ease, min-width 0.25s ease, max-height 0.25s ease;
+}
+
+/* Scrollable content region. Kept separate from .sidebar so that the
+   .sidebar-toggle is never carried along when the content is scrolled
+   (an absolutely-positioned child of a scroll container scrolls with
+   the content). */
+.sidebar-scroll {
+    flex: 1;
+    min-height: 0;
     overflow-y: auto;
     overflow-x: hidden;
+    display: flex;
+    flex-direction: column;
 }
 
 .main {
@@ -952,15 +968,13 @@ input[type="range"] {
         min-height: 0;
     }
 
+    /* Mobile: full-width toggle button at the bottom of the sidebar */
     .sidebar-toggle {
-        display: flex;
         position: static;
         width: 100%;
         height: auto;
         transform: none;
         border-radius: 0;
-        border-top: 1px solid var(--border);
-        border-right: 1px solid var(--border);
         padding: 8px;
         font-size: 0.7rem;
         gap: 6px;
@@ -971,7 +985,7 @@ input[type="range"] {
         display: inline;
     }
 
-    /* Mobile collapsed: collapse height, keep full width */
+    /* Mobile collapsed: full-width bar, content hidden */
     .sidebar.collapsed {
         width: 100%;
         min-width: 100%;
@@ -979,50 +993,6 @@ input[type="range"] {
         overflow: hidden;
         border-right: none;
         border-bottom: 1px solid var(--border);
-        transition: max-height 0.25s ease;
-    }
-
-    /* On mobile collapsed, hide content but keep toggle visible */
-    .sidebar.collapsed > .sidebar-header,
-    .sidebar.collapsed > .section,
-    .sidebar.collapsed > .history-toggle,
-    .sidebar.collapsed > .history-panel,
-    .sidebar.collapsed > .settings-toggle,
-    .sidebar.collapsed > .settings-panel,
-    .sidebar.collapsed > .section-toggle,
-    .sidebar.collapsed > .collapsible,
-    .sidebar.collapsed > .status-bar {
-        opacity: 0;
-        pointer-events: none;
-        transition: opacity 0.25s ease;
-    }
-
-    .sidebar.collapsed > .sidebar-toggle {
-        opacity: 1;
-        pointer-events: auto;
-        position: static;
-        width: 100%;
-        height: auto;
-        transform: none;
-        border-radius: 0;
-        border-top: 1px solid var(--border);
-        border-right: 1px solid var(--border);
-        padding: 8px;
-        font-size: 0.7rem;
-        gap: 6px;
-    }
-
-    .sidebar.collapsed > .sidebar-toggle > span:first-child {
-        display: inline;
-    }
-
-    /* On mobile, chevron rotates when collapsed */
-    .sidebar-chevron {
-        transition: transform 0.2s;
-    }
-
-    .sidebar.collapsed .sidebar-chevron {
-        transform: rotate(180deg);
     }
 
     .chat-messages { padding: 16px; }
@@ -1030,38 +1000,24 @@ input[type="range"] {
     .chat-header { padding: 12px 16px; }
 }
 
-/* Desktop sidebar toggle — chevron button on the right edge of the sidebar.
-   Positioned absolutely so it stays visible even when the sidebar collapses. */
+/* Sidebar toggle — shared styles. Positioning differs per breakpoint:
+   chevron tab on the right edge of the sidebar (desktop) or full-width
+   button at the bottom of the sidebar (mobile). */
 .sidebar-toggle {
-    position: absolute;
-    right: 0;
-    top: 50%;
-    transform: translateY(-50%);
-    width: 20px;
-    height: 40px;
     background: var(--bg-surface);
     border: 1px solid var(--border);
-    border-right: none;
-    border-radius: 4px 0 0 4px;
     color: var(--text-muted);
-    font-size: 0.6rem;
     cursor: pointer;
     display: flex;
     align-items: center;
     justify-content: center;
     transition: all 0.15s;
     z-index: 10;
-    padding: 0;
 }
 
 .sidebar-toggle:hover {
     background: var(--bg-elevated);
     color: var(--text-primary);
-}
-
-/* Hide text label on desktop — chevron icon only */
-.sidebar-toggle > span:first-child {
-    display: none;
 }
 
 /* Chevron rotation: ◀ (expanded) → ▶ (collapsed) */
@@ -1073,25 +1029,10 @@ input[type="range"] {
     transform: rotate(180deg);
 }
 
-/* Desktop sidebar collapsed state — content hidden, toggle tab remains */
-.sidebar.collapsed {
-    width: 20px;
-    min-width: 20px;
-    overflow: hidden;
-    border-right: none;
-    transition: width 0.25s ease, min-width 0.25s ease;
-}
-
-/* Hide all direct children of the sidebar when collapsed */
-.sidebar.collapsed > .sidebar-header,
-.sidebar.collapsed > .section,
-.sidebar.collapsed > .history-toggle,
-.sidebar.collapsed > .history-panel,
-.sidebar.collapsed > .settings-toggle,
-.sidebar.collapsed > .settings-panel,
-.sidebar.collapsed > .section-toggle,
-.sidebar.collapsed > .collapsible,
-.sidebar.collapsed > .status-bar {
+/* When collapsed, hide the scrollable content. The .sidebar-toggle is a
+   direct child of .sidebar (outside the scroll region), so it remains
+   visible and interactive in the collapsed rail/bar. */
+.sidebar.collapsed > .sidebar-scroll {
     opacity: 0;
     pointer-events: none;
     transition: opacity 0.25s ease;
@@ -1101,6 +1042,36 @@ input[type="range"] {
 .sidebar.collapsed > .sidebar-toggle {
     opacity: 1;
     pointer-events: auto;
+}
+
+/* Desktop: chevron tab on the right edge of the sidebar, vertically
+   centered. Stays visible when the sidebar collapses to a 20px rail. */
+@media (min-width: 769px) {
+    .sidebar-toggle {
+        position: absolute;
+        right: 0;
+        top: 50%;
+        transform: translateY(-50%);
+        width: 20px;
+        height: 40px;
+        border-right: none;
+        border-radius: 4px 0 0 4px;
+        font-size: 0.6rem;
+        padding: 0;
+    }
+
+    /* Hide text label on desktop — chevron icon only */
+    .sidebar-toggle > span:first-child {
+        display: none;
+    }
+
+    /* Collapsed: 20px rail, chevron tab remains visible */
+    .sidebar.collapsed {
+        width: 20px;
+        min-width: 20px;
+        overflow: hidden;
+        border-right: none;
+    }
 }
 
 /* ═══════════════════════════════════════════
@@ -1563,6 +1534,12 @@ input[type="range"] {
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
+    /* Never squash to fit the panel — entries keep a fixed, readable
+       height and .trace-log scrolls instead. Without this, once the log
+       fills its max-height the browser shrinks every entry (its overflow:
+       hidden zeroes the flex item's automatic min-size), clipping the text
+       to an unreadable sliver. */
+    flex-shrink: 0;
 }
 
 .trace-timestamp {

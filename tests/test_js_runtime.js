@@ -421,6 +421,117 @@ await runTest("saveCurrentSession updates existing session id", () => {
     assert.equal(stateModule.state.currentSessionId, sessionId);
 });
 
+// ─── Storage quota & sanitization ──────────────────────────────────────────────
+
+// localStorage mock that enforces a total size limit, throwing the same
+// QuotaExceededError DOMException a real browser throws.
+function makeQuotaLocalStorage(limit) {
+    const store = new Map();
+    let size = 0;
+    return {
+        getItem(k) { return store.has(k) ? store.get(k) : null; },
+        setItem(k, v) {
+            v = String(v);
+            const old = store.has(k) ? store.get(k).length : 0;
+            if (size - old + v.length > limit) {
+                throw new DOMException("The quota exceeded", "QuotaExceededError");
+            }
+            size += v.length - old;
+            store.set(k, v);
+        },
+        removeItem(k) {
+            if (store.has(k)) { size -= store.get(k).length; store.delete(k); }
+        },
+        clear() { store.clear(); size = 0; },
+    };
+}
+
+await runTest("saveCurrentSession strips image data URLs from persisted history", () => {
+    globalThis.localStorage.clear();
+    stateModule.state.sessionHistory = [];
+    const bigB64 = "A".repeat(20000);
+    stateModule.state.chatMessages = [
+        { role: "user", content: [
+            { type: "text", text: "Look at this" },
+            { type: "image_url", image_url: { url: `data:image/png;base64,${bigB64}` } },
+        ] },
+        { role: "assistant", content: "Nice image!" },
+    ];
+    stateModule.state.selectedModel = "vision-model";
+    stateModule.state.currentSessionId = null;
+
+    stateModule.saveCurrentSession();
+
+    const storedRaw = globalThis.localStorage.getItem("lm_console_history");
+    const stored = JSON.parse(storedRaw);
+    assert.ok(!storedRaw.includes("data:image"), "persisted history must not contain base64 image data");
+    assert.equal(stored.length, 1);
+    const parts = stored[0].messages[0].content;
+    assert.equal(parts[0].text, "Look at this");
+    assert.equal(parts[1].type, "text");
+    assert.match(parts[1].text, /\[image attached: image\/png\]/);
+    // The live in-memory session keeps the full payload for the active
+    // conversation (multimodal context is preserved for the current chat).
+    assert.equal(
+        stateModule.state.chatMessages[0].content[1].image_url.url,
+        `data:image/png;base64,${bigB64}`
+    );
+});
+
+await runTest("history persistence drops oldest sessions when quota exceeded", () => {
+    const original = globalThis.localStorage;
+    // ~540 chars per session: 3 sessions (~1620) exceed the limit, 2 fit.
+    globalThis.localStorage = makeQuotaLocalStorage(1300);
+    const warnings = [];
+    globalThis.window.addEventListener("lmconsole:storage-warning", (e) => warnings.push(e.detail));
+
+    try {
+        const mk = (id) => ({
+            id,
+            createdAt: new Date().toISOString(),
+            model: "m",
+            messages: [{ role: "user", content: "x".repeat(400) }],
+            preview: id,
+        });
+        stateModule.state.sessionHistory = [mk("newest"), mk("middle"), mk("oldest")];
+
+        stateModule.saveSessionHistory(); // must not throw
+
+        const stored = JSON.parse(globalThis.localStorage.getItem("lm_console_history"));
+        assert.equal(stored.length, 2, "oldest session should have been dropped");
+        assert.equal(stored[0].id, "newest", "newest session must survive");
+        assert.equal(stateModule.state.sessionHistory.length, 2, "in-memory history syncs with persisted");
+        assert.ok(warnings.some(w => w.historyChanged), "user should be warned about trimming");
+    } finally {
+        globalThis.localStorage = original;
+    }
+});
+
+await runTest("loadSessionHistory sanitizes legacy image data and re-persists", () => {
+    globalThis.localStorage.clear();
+    const legacy = [{
+        id: "legacy-1",
+        createdAt: new Date().toISOString(),
+        model: "vision-model",
+        messages: [
+            { role: "user", content: [
+                { type: "text", text: "img" },
+                { type: "image_url", image_url: { url: `data:image/jpeg;base64,${"Z".repeat(5000)}` } },
+            ] },
+        ],
+        preview: "img",
+    }];
+    globalThis.localStorage.setItem("lm_console_history", JSON.stringify(legacy));
+
+    stateModule.loadSessionHistory();
+
+    const parts = stateModule.state.sessionHistory[0].messages[0].content;
+    assert.equal(parts[1].type, "text", "legacy data URL replaced with placeholder");
+    const storedRaw = globalThis.localStorage.getItem("lm_console_history");
+    assert.ok(!storedRaw.includes("data:image"), "stored value re-persisted without base64 data");
+    assert.ok(storedRaw.length < JSON.stringify(legacy).length, "re-persisted value is smaller");
+});
+
 // ─── Theme tests ───────────────────────────────────────────────
 
 console.log("\nTheme module:");

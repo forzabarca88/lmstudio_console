@@ -861,6 +861,71 @@ class TestScreenshot(unittest.TestCase):
 
         self._screenshot("24b_sidebar_restored")
 
+    def test_sidebar_collapse_mobile(self):
+        """Mobile: Collapsed sidebar keeps a visible, clickable toggle.
+
+        On a narrow viewport the sidebar collapses to a short bar. The
+        toggle must remain visible and tappable inside that bar so the
+        sidebar can be re-expanded (regression: the toggle used to be
+        clipped away, leaving a stuck collapsed state).
+        """
+        self.page.set_viewport_size({"width": 352, "height": 1063})
+        self._navigate()
+
+        # Collapse via the toggle
+        self.page.click("#sidebarToggle")
+        self.page.wait_for_timeout(500)
+
+        self.assertTrue(
+            self.page.evaluate(
+                "document.getElementById('sidebar').classList.contains('collapsed')"
+            ),
+            "Sidebar should have collapsed class after toggle on mobile"
+        )
+
+        info = self.page.evaluate("""() => {
+            const sb = document.getElementById('sidebar');
+            const t = document.getElementById('sidebarToggle');
+            const b = t.getBoundingClientRect();
+            return {
+                sbHeight: sb.getBoundingClientRect().height,
+                toggle: {x: b.x, y: b.y, w: b.width, h: b.height},
+                opacity: getComputedStyle(t).opacity
+            };
+        }""")
+
+        self.assertLess(
+            info["sbHeight"], 60,
+            f"Collapsed mobile sidebar should be a short bar (got {info['sbHeight']}px)"
+        )
+        self.assertGreater(info["toggle"]["w"], 200, "Toggle should span the sidebar width")
+        self.assertGreater(info["toggle"]["h"], 20, "Toggle should have a tappable height")
+        self.assertGreaterEqual(info["toggle"]["y"], 0, "Toggle should not be above the viewport")
+        self.assertLessEqual(
+            info["toggle"]["y"] + info["toggle"]["h"], info["sbHeight"],
+            "Toggle should be fully inside the collapsed bar"
+        )
+        self.assertEqual(info["opacity"], "1")
+        self.assertTrue(
+            self.page.locator("#sidebarToggle").is_visible(),
+            "Toggle must be visible while collapsed on mobile"
+        )
+
+        self._screenshot("28_mobile_sidebar_collapsed")
+
+        # Re-expand via the same toggle
+        self.page.click("#sidebarToggle")
+        self.page.wait_for_timeout(500)
+
+        self.assertFalse(
+            self.page.evaluate(
+                "document.getElementById('sidebar').classList.contains('collapsed')"
+            ),
+            "Sidebar should re-expand when the collapsed toggle is clicked"
+        )
+
+        self._screenshot("29_mobile_sidebar_restored")
+
     # --- Cancellation (stop button) interactive tests ---
 
     def test_stop_button_interactive(self):
@@ -1455,6 +1520,65 @@ class TestScreenshot(unittest.TestCase):
         self.assertTrue(self.page.locator("#tracePanel").is_hidden(), "Trace panel should be closed after toggle")
 
         self._screenshot("23b_trace_panel_closed")
+
+    def test_trace_entries_keep_readable_size(self):
+        """Trace log: Entries keep a fixed, readable height when the log
+        overflows — the log scrolls instead of squashing entries
+        (regression: overflow shrank every entry to an unreadable sliver).
+        """
+        self._navigate()
+
+        self.page.click("#traceToggle")
+        self.page.wait_for_selector("#tracePanel.open", timeout=5000)
+
+        # Clear pre-existing entries (the live SSE stream may have logged
+        # requests from page load) so the log starts deterministic
+        self.page.click("#traceClearBtn")
+
+        # Inject enough entries to overflow the log's max-height
+        self.page.evaluate("""() => {
+            const traceLog = document.getElementById('traceLog');
+            for (let i = 0; i < 25; i++) {
+                const entry = document.createElement('div');
+                entry.className = 'trace-entry trace-info';
+                entry.innerHTML =
+                    '<span class="trace-timestamp">12:00:00</span>' +
+                    '<span class="trace-level">INFO</span>' +
+                    '<span class="trace-message">Streaming request forwarded to LM Studio endpoint</span>';
+                traceLog.appendChild(entry);
+            }
+        }""")
+        self.page.wait_for_timeout(200)
+
+        info = self.page.evaluate("""() => {
+            const heights = [...document.querySelectorAll('.trace-entry')]
+                .map(e => e.getBoundingClientRect().height);
+            const log = document.getElementById('traceLog');
+            return {
+                count: heights.length,
+                minH: Math.min(...heights),
+                maxH: Math.max(...heights),
+                logScrollH: log.scrollHeight,
+                logClientH: log.clientHeight
+            };
+        }""")
+
+        # (count >= 25: the live SSE stream may append entries meanwhile)
+        self.assertGreaterEqual(info["count"], 25)
+        self.assertGreater(
+            info["minH"], 20,
+            f"Trace entries must keep a readable height when the log overflows (got {info['minH']}px)"
+        )
+        self.assertLessEqual(
+            info["maxH"] - info["minH"], 1,
+            "All trace entries should have a uniform height"
+        )
+        self.assertGreater(
+            info["logScrollH"], info["logClientH"],
+            "An overflowing trace log should scroll rather than squash entries"
+        )
+
+        self._screenshot("30_trace_entries_overflow")
 
     # --- Cancellation (stop button) interactive tests ---
 
