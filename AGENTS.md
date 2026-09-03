@@ -22,9 +22,10 @@
 │   ├── logger.py            # Trace logging with shared logger, RequestTrace context, cancellation tracking, and SSE streamer integration
 │   ├── log_streamer.py      # SSE log streamer: ring buffer (500 entries), subscriber broadcast for live trace log streaming
 │   ├── proxy.py             # HTTP proxy using httpx for forwarding requests to LM Studio/OpenAI endpoints with streaming and graceful cancellation support
-│   ├── server.py            # FastAPI app with proxy routes, chat endpoint (client disconnect detection, cooperative cancellation), tool endpoints, file upload, trace log SSE, and CORS middleware
+│   ├── server.py            # FastAPI app with proxy routes, chat endpoint (client disconnect detection, cooperative cancellation), file upload (50MB cap), trace log SSE, CORS middleware, SSRF-safe X-LM-Studio-URL handling, and graceful shutdown (5s force-exit)
 │   ├── agent.py             # Pydantic AI Agent wrapper for chat with automatic tool call handling (Pydantic AI internal tool loop), tool_call/tool_result SSE events, thinking tokens, message format conversion, and cooperative cancellation support
-│   └── tools.py             # Pydantic AI tool definitions (web_search, open_web_page, run_python_code) with OpenAI-compatible schema generation
+│   ├── tools.py             # Pydantic AI tool definitions (web_search, open_web_page, run_python_code): run_python_code in a disposable isolated subprocess, web_search off the event loop, open_web_page via SSRF-validated streaming fetch with a size cap
+│   └── url_security.py      # SSRF-safe URL validation for the client-supplied proxy target (LAN ranges allowed) and outbound tool fetches (global-only), with metadata-hostname block and DNS resolution checks
 ├── static/
 │   ├── css/
 │   │   ├── base.css         # Structural/layout rules (theme-agnostic): reset, layout, sidebar, chat, forms, buttons, components
@@ -42,19 +43,19 @@
 │   │   ├── state.js         # State management: localStorage persistence for settings/session history; runtime abort controller and reason tracking; theme management with applyTheme
 │   │   ├── trace.js         # Live trace log panel: SSE streaming from /api/trace-logs, auto-scroll, pause/resume, exponential backoff reconnect
 │   │   └── ui.js            # UI utilities: toast notifications, formatting, auto-resize, scroll, metrics display
+│   ├── vendor/              # Pinned vendored frontend libraries (marked 15.0.7, DOMPurify 3.2.4, mermaid 10.9.8) served at /static/vendor/ so markdown, sanitization and diagram rendering work offline
 │   └── index.html          # Main HTML page with sidebar (Connection, Models, History, Settings, Trace Log), chat area, and toast container
 ├── tests/
 │   ├── __init__.py          # Empty test package init
-│   ├── test_agent.py        # Unit tests for ChatAgent message conversion, streaming (text, thinking, tool calls), tool_call_id-based result matching, and cooperative cancellation
-│   ├── test_backend.py      # Unit tests for config, logging, and proxy functionality
-│   ├── test_integration.py  # Integration tests: connect, list/load/unload models, chat, metrics, session management (multi-turn, tool history, multimodal), tools, file upload, CORS, auth, errors, and request cancellation (chat disconnect, proxy disconnect, cooperative cancel)
-│   ├── test_tools.py        # Unit tests for tool schema generation and execution
-│   ├── test_js_runtime.js   # Node.js runtime tests: state management (defaults, persist, restore, session save with cap, abortActiveRequest), UI utilities, session lifecycle (continue, delete, error handling)
+│   ├── test_agent.py        # Unit tests for ChatAgent message conversion (incl. multimodal image/audio/file parts), streaming (text, thinking, tool calls), tool_call_id-based result matching, system prompt deduplication, and cooperative cancellation (incl. cancellation during model silence)
+│   ├── test_backend.py      # Unit tests for config, logging, and proxy functionality (incl. stream read timeout)
+│   ├── test_integration.py  # Integration tests: connect, list/load/unload models, chat, metrics, session management (multi-turn, tool history, multimodal), removed tool endpoints (404), file upload (incl. 50MB cap), CORS, auth, errors, X-LM-Studio-URL SSRF validation, graceful shutdown (SIGINT with 5s force-exit), and request cancellation (chat disconnect, proxy disconnect, cooperative cancel)
+│   ├── test_tools.py        # Unit tests for tool execution: run_python_code subprocess (output, stderr, timeout, size cap), open_web_page (fetch, truncation, SSRF rejection, errors), live web_search, and agent toolset wiring
+│   ├── test_js_runtime.js   # Node.js runtime tests: state management (defaults, persist, restore, session save with cap incl. audio/file data-URI sanitization, abortActiveRequest), UI utilities, session lifecycle (continue, delete, error handling)
 │   ├── test_js_syntax.py    # Syntax validation tests for all JavaScript modules (Node.js --check and reserved word scanning)
-│   └── test_screenshot.py   # Playwright tests: visual rendering (page layout, panels, elements) and interactive behavioral tests (connect, send message, new chat, settings toggle, model load/unload, copy button, stop button, new chat cancels request)
+│   ├── test_screenshot.py   # Playwright tests: visual rendering (page layout, panels, elements, screenshot pixel validation) and interactive behavioral tests (connect, send message, new chat, settings toggle, model load/unload, copy button, stop button, new chat cancels request, sidebar collapse desktop+mobile, trace log overflow stability), XSS sanitization, and live viewport resize (desktop/tablet/mobile)
+│   └── test_url_security.py # Unit tests for the SSRF-safe URL validators (DNS resolution mocked)
 ├── .dockerignore            # Build context exclusions for the Docker image
-├── .pytest_cache/
-│   └── README.md            # pytest cache directory marker
 ├── AGENTS.md                # Project guidelines and documentation
 ├── Dockerfile               # Minimal production Docker image (Python 3.12 + uv, non-root user)
 ├── README.md                # Project overview, features, usage, and configuration
@@ -62,7 +63,7 @@
 ├── pyproject.toml           # Python project configuration with dependencies
 ├── package.json             # Node.js project configuration for frontend dependencies
 ├── package-lock.json        # Node.js dependency lock file
-└── run.py                   # Entry point for starting the server with graceful shutdown
+└── run.py                   # Entry point; delegates to backend.server.run (Ctrl+C graceful shutdown with 5s force-exit)
 ```
 
 ### Server Restart
@@ -79,6 +80,10 @@ CSS is split into a theme-agnostic `base.css` (layout, reset, components) and sw
 - `PartDeltaEvent(ThinkingPartDelta)` contains incremental thinking text; emit it as `thinking` and accumulate it with frontend `+=`.
 - `PartStartEvent(TextPart)` and `PartDeltaEvent(TextPartDelta)` are incremental content sources; frontend accumulates `content` with `+=`.
 - Do not emit or log `PartEndEvent` full accumulated content as a new delta; it repeats prior text.
+
+### Mermaid Security Model
+
+`renderContent()` inserts mermaid SVG output **without** DOMPurify: mermaid runs at `securityLevel: "strict"` (enforced via `mermaidConfig()` in state.js, which every `mermaid.initialize()` call must use since initialize replaces the whole config) and sanitizes label HTML internally. DOMPurify cannot round-trip SVG `<foreignObject>` content and would silently strip every node/edge label — do not wrap the SVG in `_setHtml`.
 
 ### Tool Call Streaming
 

@@ -5,6 +5,163 @@
 const SETTINGS_KEY = "lm_console_settings";
 const HISTORY_KEY = "lm_console_history";
 
+// Maximum number of chat sessions to keep in history (SPEC: at least 10).
+const HISTORY_MAX_SESSIONS = 10;
+
+/**
+ * Write a value to localStorage, reporting why it failed.
+ * @returns {"ok"|"quota"|"error"} "quota" when the browser storage limit
+ *   was hit (QuotaExceededError), "error" for any other failure.
+ */
+function writeStorage(key, value) {
+    try {
+        localStorage.setItem(key, value);
+        return "ok";
+    } catch (e) {
+        if (isStorageQuotaError(e)) return "quota";
+        console.error(`Failed to write "${key}" to localStorage:`, e);
+        return "error";
+    }
+}
+
+/**
+ * Detect quota-exceeded storage errors across engines.
+ * @param {unknown} e - The caught error.
+ * @returns {boolean}
+ */
+function isStorageQuotaError(e) {
+    return !!e && (
+        e.name === "QuotaExceededError" ||          // Chromium, Firefox, Safari (modern)
+        e.name === "NS_ERROR_DOM_QUOTA_REACHED" ||   // Firefox (legacy)
+        e.code === 22                                 // DOMException QUOTA_EXCEEDED_ERR
+    );
+}
+
+/**
+ * Notify the UI (app.js) about a persistence problem. The listener shows a
+ * toast and re-renders the history list when sessions were dropped.
+ * @param {Object} detail - { message, historyChanged? }
+ */
+function dispatchStorageWarning(detail) {
+    window.dispatchEvent(new CustomEvent("lmconsole:storage-warning", { detail }));
+}
+
+/**
+ * Replace inlined media data URLs with lightweight text placeholders.
+ *
+ * Live multimodal messages embed the full base64 payload of every attached
+ * image, audio, or file (easily megabytes). Persisting those to
+ * localStorage exhausts the browser's ~5MB origin quota, so stored sessions
+ * carry a placeholder instead. The in-memory session keeps the full payload
+ * for the live conversation; only the persisted copy is reduced.
+ * Consequence: continuing a multimodal session later restores the
+ * placeholder text, not the media.
+ * @param {Array} messages - OpenAI-compatible messages.
+ * @returns {Array} Shallow-copied messages safe to persist.
+ */
+function sanitizeMessagesForStorage(messages) {
+    if (!Array.isArray(messages)) return [];
+    return messages.map((msg) => {
+        if (!msg || !Array.isArray(msg.content)) return { ...msg };
+        const content = msg.content.map((part) => {
+            if (part && part.type === "image_url") {
+                const url = part.image_url && part.image_url.url;
+                if (typeof url === "string" && url.startsWith("data:")) {
+                    const mime = url.slice(5).split(";")[0] || "image";
+                    return { type: "text", text: `[image attached: ${mime}]` };
+                }
+            }
+            if (part && (part.type === "input_audio" || part.type === "input_file")) {
+                const data = part.file_data || part.file;
+                if (typeof data === "string" && data.startsWith("data:")) {
+                    const mime = data.slice(5).split(";")[0] || part.type;
+                    return { type: "text", text: `[${part.type} attached: ${mime}]` };
+                }
+            }
+            return part;
+        });
+        return { ...msg, content };
+    });
+}
+
+/**
+ * Persist session history to localStorage, recovering from the browser
+ * quota limit.
+ *
+ * On QuotaExceededError the oldest sessions are dropped one at a time until
+ * the write fits (recent history is preserved). The previously stored value
+ * is freed first so a smaller candidate can actually be written when the
+ * origin is at its limit. If even an empty history does not fit, the key is
+ * cleared. Any trimming is surfaced via the "lmconsole:storage-warning"
+ * event (app.js shows a toast and re-renders the history list).
+ */
+function persistHistory() {
+    let history = [...state.sessionHistory];
+    let freed = false;
+
+    const tryWrite = (candidate) => {
+        let result = writeStorage(HISTORY_KEY, JSON.stringify(candidate));
+        if (result === "quota" && !freed) {
+            // Free the space held by the previously stored (larger) value
+            // before retrying with a smaller candidate.
+            try {
+                localStorage.removeItem(HISTORY_KEY);
+                freed = true;
+            } catch {
+                // ignore - a failed removeItem cannot help anyway
+            }
+            result = writeStorage(HISTORY_KEY, JSON.stringify(candidate));
+        }
+        return result;
+    };
+
+    let dropped = 0;
+    let result = tryWrite(history);
+    while (result === "quota" && history.length > 0) {
+        history.pop();
+        dropped++;
+        result = tryWrite(history);
+    }
+
+    if (result === "ok") {
+        state.sessionHistory = history;
+        if (dropped > 0) {
+            dispatchStorageWarning({
+                message: history.length === 0
+                    ? "Browser storage is full — chat history could not be saved."
+                    : `Chat storage is full — ${dropped} older session${dropped === 1 ? "" : "s"} removed.`,
+                historyChanged: true,
+            });
+        }
+        return;
+    }
+
+    if (result === "error") {
+        // Non-quota failure: storage is unavailable (private mode, disabled
+        // storage). Keep the in-memory history; writes will keep failing.
+        console.error("Session history could not be persisted (storage unavailable)");
+        return;
+    }
+
+    // Even an empty history did not fit: clear the key and start fresh.
+    // Trade-off: the quota may be held by *other* keys, in which case
+    // dropping the stored history reclaims nothing and previously
+    // persistable sessions are lost. The in-memory copy is reset anyway so
+    // state matches what is actually on disk, and the toast notifies the
+    // user instead of failing silently.
+    try {
+        localStorage.removeItem(HISTORY_KEY);
+    } catch {
+        // ignore
+    }
+    state.sessionHistory = [];
+    dispatchStorageWarning({
+        message: "Browser storage is full — chat history could not be saved.",
+        historyChanged: true,
+    });
+}
+
+
 export const state = {
     endpoint: "http://localhost:1234",
     apiToken: "",
@@ -57,7 +214,11 @@ export function saveSettings() {
         toolCallEnabled: state.toolCallEnabled,
         theme: state.theme,
     };
-    localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings));
+    if (writeStorage(SETTINGS_KEY, JSON.stringify(settings)) === "quota") {
+        dispatchStorageWarning({
+            message: "Browser storage is full — settings may not be saved.",
+        });
+    }
 }
 
 /**
@@ -118,30 +279,60 @@ export function saveCurrentSession() {
         id: state.currentSessionId || generateUuid(),
         createdAt: new Date().toISOString(),
         model: state.selectedModel || null,
-        messages: [...state.chatMessages],
+        // Persist a sanitized copy: live messages may contain megabytes of
+        // base64 image data that would exceed the localStorage quota.
+        messages: sanitizeMessagesForStorage(state.chatMessages),
         preview,
     };
     // Remove existing session with same id (if continuing)
     state.sessionHistory = state.sessionHistory.filter(s => s.id !== session.id);
     // Add to front
     state.sessionHistory.unshift(session);
-    // Keep last 10
-    if (state.sessionHistory.length > 10) {
-        state.sessionHistory = state.sessionHistory.slice(0, 10);
+    // Keep last N sessions
+    if (state.sessionHistory.length > HISTORY_MAX_SESSIONS) {
+        state.sessionHistory = state.sessionHistory.slice(0, HISTORY_MAX_SESSIONS);
     }
     state.currentSessionId = session.id;
-    localStorage.setItem(HISTORY_KEY, JSON.stringify(state.sessionHistory));
+    persistHistory();
 }
 
 /**
  * Load session history from localStorage.
+ *
+ * Sanitizes any image data URLs left behind by older versions (the main
+ * cause of quota exhaustion) and re-persists the shrunken value so the
+ * storage is reclaimed on the first load after an upgrade.
  */
 export function loadSessionHistory() {
+    let raw = null;
     try {
-        const saved = JSON.parse(localStorage.getItem(HISTORY_KEY));
-        state.sessionHistory = saved || [];
-    } catch {
+        raw = localStorage.getItem(HISTORY_KEY);
+    } catch (e) {
+        // Storage access itself can throw (disabled storage, some private
+        // modes); degrade to an empty history like the parse-failure path.
+        console.error("Failed to read session history from localStorage:", e);
         state.sessionHistory = [];
+        return;
+    }
+    let saved = null;
+    if (raw) {
+        try {
+            saved = JSON.parse(raw);
+        } catch {
+            saved = null;
+        }
+    }
+    if (!Array.isArray(saved)) {
+        state.sessionHistory = [];
+        return;
+    }
+    state.sessionHistory = saved.map(s => ({
+        ...s,
+        messages: sanitizeMessagesForStorage(s.messages),
+    }));
+    const sanitized = JSON.stringify(state.sessionHistory);
+    if (sanitized.length < raw.length) {
+        persistHistory();
     }
 }
 
@@ -175,10 +366,10 @@ export function abortActiveRequest() {
 }
 
 /**
- * Save session history to localStorage.
+ * Save session history to localStorage (quota-safe; see persistHistory).
  */
 export function saveSessionHistory() {
-    localStorage.setItem(HISTORY_KEY, JSON.stringify(state.sessionHistory));
+    persistHistory();
 }
 
 /**
@@ -235,6 +426,24 @@ const MERMAID_THEMES = {
 };
 
 /**
+ * Build the complete mermaid configuration for a theme.
+ *
+ * `mermaid.initialize()` *replaces* the entire config, so every call site
+ * must pass the full set — most importantly `securityLevel: "strict"`
+ * (disables click handlers and other interactive features in
+ * model-generated diagrams).
+ * @param {string} themeName - Theme key: "cyberpunk", "light", or "warm".
+ * @returns {Object} Config object for `mermaid.initialize()`.
+ */
+export function mermaidConfig(themeName) {
+    return {
+        startOnLoad: false,
+        theme: MERMAID_THEMES[themeName] || "dark",
+        securityLevel: "strict",
+    };
+}
+
+/**
  * Apply a UI theme: swap stylesheet, update state, persist, and reinit mermaid.
  * @param {string} themeName - Theme key: "cyberpunk", "light", or "warm".
  */
@@ -251,9 +460,9 @@ export function applyTheme(themeName) {
     // Persist
     saveSettings();
 
-    // Reinitialize mermaid with matching theme
+    // Reinitialize mermaid with the full config for the matching theme
     if (typeof mermaid !== "undefined") {
-        mermaid.initialize({ theme: MERMAID_THEMES[themeName] || "dark" });
+        mermaid.initialize(mermaidConfig(themeName));
     }
 
     // Dispatch custom event for other modules

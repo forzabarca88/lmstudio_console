@@ -37,14 +37,18 @@ export function formatBytes(bytes) {
 }
 
 /**
- * Escape HTML special characters.
- * @param {string} str
+ * Escape HTML special characters, including quotes, so the result is safe
+ * in both element text content and HTML attribute contexts.
+ * @param {*} value - Value to escape (coerced to string).
  * @returns {string}
  */
-export function escapeHtml(str) {
-    const div = document.createElement("div");
-    div.textContent = str;
-    return div.innerHTML;
+export function escapeHtml(value) {
+    return String(value)
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;")
+        .replace(/'/g, "&#39;");
 }
 
 /**

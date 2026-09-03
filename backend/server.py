@@ -4,8 +4,13 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import contextlib
 import json
 import logging
+import os
+import signal
+import sys
+import threading
 from contextlib import asynccontextmanager
 from typing import AsyncIterable, Optional
 
@@ -18,8 +23,8 @@ from fastapi.staticfiles import StaticFiles
 from backend.config import get_host, get_port, get_lm_studio_url, get_static_dir
 from backend.proxy import proxy_request, proxy_stream_iter, close_client, trace_logger
 from backend.agent import ChatAgent
-from backend.tools import get_tool_schemas, execute_tool
 from backend.log_streamer import log_streamer
+from backend.url_security import URLSecurityError, validate_proxy_url
 
 logger = logging.getLogger(__name__)
 
@@ -40,6 +45,10 @@ _HOP_BY_HOP_HEADERS = {
 # Header the frontend sends to override the LM Studio target URL.
 _HEADER_LM_STUDIO_URL = "X-LM-Studio-URL"
 
+# Seconds to let in-flight connections drain after a shutdown signal
+# (SIGINT/SIGTERM) before force-exiting the process with status 1.
+_SHUTDOWN_FORCE_TIMEOUT = 5.0
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -59,9 +68,29 @@ app = FastAPI(
 )
 
 
-def _resolve_target_url(request: Request) -> str:
-    """Resolve the target URL from request header, falling back to env var."""
-    return request.headers.get(_HEADER_LM_STUDIO_URL) or get_lm_studio_url()
+async def _resolve_target_url(request: Request) -> str:
+    """Resolve the target URL from request header, falling back to env var.
+
+    The client-supplied header value is validated to prevent SSRF against
+    metadata, loopback, link-local and other non-routable targets. On
+    validation failure a warning is logged and the operator-configured URL
+    is used instead; that URL is trusted and intentionally NOT validated,
+    which keeps the ``http://localhost:1234`` default working.
+    """
+    header_url = request.headers.get(_HEADER_LM_STUDIO_URL)
+    if not header_url:
+        return get_lm_studio_url()
+    try:
+        # The validator performs DNS lookups, which block; keep the event
+        # loop free while the header value is checked.
+        await asyncio.to_thread(validate_proxy_url, header_url)
+    except URLSecurityError as e:
+        logger.warning(
+            "Rejected %s header %r (%s); using configured target URL",
+            _HEADER_LM_STUDIO_URL, header_url, e,
+        )
+        return get_lm_studio_url()
+    return header_url
 
 
 def _make_json_response(response: httpx.Response) -> JSONResponse:
@@ -115,6 +144,56 @@ def _handle_proxy_error(method: str, path: str, target: str, error: Exception) -
 # Model load/unload can take a long time (minutes for large models).
 # Use a 10-minute timeout for these operations.
 _MODEL_OP_TIMEOUT = 600.0
+
+# Maximum allowed proxied/JSON request body (100 MB). Gives headroom above
+# the 50 MB upload cap including base64 (4/3) inflation for multimodal
+# payloads; a LAN client cannot OOM the server via the proxy.
+_MAX_PROXY_BODY = 100 * 1024 * 1024
+
+
+def _body_too_large_response(max_size: int) -> JSONResponse:
+    """413 response for an oversized request body (upload-style JSON)."""
+    return JSONResponse(
+        status_code=413,
+        content={"error": f"Request body too large: maximum size is {max_size // (1024 * 1024)}MB"},
+    )
+
+
+async def _read_capped_json(
+    request: Request, max_size: int
+) -> tuple[Optional[dict], Optional[JSONResponse]]:
+    """Read the request body with a size cap and parse it as JSON.
+
+    Returns ``(body, None)`` on success, or ``(None, response)`` where
+    *response* is a 413 JSONResponse when the body exceeds *max_size*.
+
+    An explicit Content-Length above the cap is rejected immediately
+    without reading the body. Otherwise the body is streamed in chunks
+    via ``request.stream()``: chunks are only retained while the total is
+    within the cap (memory stays bounded), and a hard limit of 2x the cap
+    aborts early even for pathologically huge (chunked) bodies.
+    """
+    content_length = request.headers.get("content-length")
+    if content_length is not None:
+        try:
+            if int(content_length) > max_size:
+                return None, _body_too_large_response(max_size)
+        except ValueError:
+            pass  # non-numeric Content-Length: rely on the chunked read
+
+    chunks: list[bytes] = []
+    total = 0
+    async for chunk in request.stream():
+        total += len(chunk)
+        if total > max_size * 2:  # bounded: stop even for huge bodies
+            return None, _body_too_large_response(max_size)
+        if total <= max_size:
+            chunks.append(chunk)
+    if total > max_size:
+        return None, _body_too_large_response(max_size)
+    # Raises JSONDecodeError exactly like request.json() did before.
+    body = json.loads(b"".join(chunks).decode("utf-8", "replace"))
+    return body, None
 
 
 async def _proxy_buffered_request(
@@ -182,6 +261,12 @@ async def serve_index_options():
     return JSONResponse(status_code=200, content={})
 
 
+@app.get("/api/health")
+async def health():
+    """Liveness probe: 200 once the server is up and serving requests."""
+    return JSONResponse(content={"status": "ok"})
+
+
 # --- Model Management (proxied to LM Studio native API) ---
 
 @app.get("/proxy/{path:path}")
@@ -189,7 +274,7 @@ async def proxy_get(request: Request, path: str):
     """Proxy GET requests to the backend API."""
     auth = request.headers.get("Authorization")
     headers = {"Authorization": auth} if auth else None
-    target_url = _resolve_target_url(request)
+    target_url = await _resolve_target_url(request)
     return await _proxy_buffered_request("GET", path, target_url, headers=headers)
 
 
@@ -209,8 +294,10 @@ async def proxy_post(request: Request, path: str):
     """
     auth = request.headers.get("Authorization")
     headers = {"Authorization": auth} if auth else None
-    body = await request.json()
-    target_url = _resolve_target_url(request)
+    body, body_error = await _read_capped_json(request, _MAX_PROXY_BODY)
+    if body_error is not None:
+        return body_error
+    target_url = await _resolve_target_url(request)
 
     # Detect streaming: chat completions with stream=true
     is_stream = "chat/completions" in path and body.get("stream", False)
@@ -279,8 +366,10 @@ async def chat_endpoint(request: Request):
     Response: SSE stream of structured content, thinking, tool lifecycle,
     cancellation, error, and usage events.
     """
-    body = await request.json()
-    target_url = _resolve_target_url(request)
+    body, body_error = await _read_capped_json(request, _MAX_PROXY_BODY)
+    if body_error is not None:
+        return body_error
+    target_url = await _resolve_target_url(request)
     api_token = request.headers.get("Authorization", "")
     if api_token.startswith("Bearer "):
         api_token = api_token[7:]
@@ -347,14 +436,6 @@ async def chat_endpoint(request: Request):
     )
 
 
-# --- Tool endpoints (kept for backward compatibility) ---
-
-@app.get("/api/tools")
-async def list_tools():
-    """Return available tool schemas in OpenAI-compatible format."""
-    return JSONResponse(content=get_tool_schemas())
-
-
 # --- SSE trace log streaming ---
 
 @app.get("/api/trace-logs")
@@ -411,23 +492,12 @@ async def trace_logs(request: Request):
     )
 
 
-@app.post("/api/tool-exec")
-async def execute_tool_endpoint(request: Request):
-    """Execute a registered tool with the given arguments."""
-    body = await request.json()
-    name = body.get("name", "")
-    arguments = body.get("arguments", {})
-    try:
-        result = await execute_tool(name, arguments)
-        return JSONResponse(content={"result": result})
-    except ValueError as e:
-        return JSONResponse(status_code=400, content={"error": str(e)})
-    except Exception as e:
-        trace_logger.log_server_error("POST", "/api/tool-exec", e)
-        return JSONResponse(status_code=500, content={"error": str(e)})
-
-
 # --- File Upload ---
+
+# Maximum allowed upload size (50 MB), matching the client-side cap in
+# static/js/app.js (addAttachment). Enforced server-side in /api/upload.
+_MAX_UPLOAD_SIZE = 50 * 1024 * 1024
+
 
 @app.post("/api/upload")
 async def upload_file(request: Request):
@@ -437,13 +507,41 @@ async def upload_file(request: Request):
     Returns base64-encoded content and MIME type for the frontend
     to include in multimodal messages.
     """
+    # Early reject: a multipart body larger than 2x the cap must carry an
+    # oversized file. Rejecting before request.form() avoids spooling a
+    # huge multipart to a temp file; the chunked read below is the backstop
+    # for missing/non-numeric Content-Length.
+    content_length = request.headers.get("content-length")
+    if content_length is not None:
+        try:
+            if int(content_length) > _MAX_UPLOAD_SIZE * 2:
+                return JSONResponse(status_code=413, content={"error": "File too large: maximum size is 50MB"})
+        except ValueError:
+            pass
+
     form = await request.form()
     file = form.get("file")
     if not file:
         return JSONResponse(status_code=400, content={"error": "No file provided"})
 
-    # Read and encode
-    content = await file.read()
+    # Read in 1 MiB chunks, enforcing the server-side size cap. Chunks beyond
+    # the cap are discarded (memory stays bounded), and a hard limit of 2x the
+    # cap aborts early even for pathologically huge uploads.
+    chunks, total, hard_limit = [], 0, _MAX_UPLOAD_SIZE * 2
+    while True:
+        chunk = await file.read(1024 * 1024)
+        if not chunk:
+            break
+        total += len(chunk)
+        if total > hard_limit:          # bounded: stop even for huge uploads
+            return JSONResponse(status_code=413, content={"error": "File too large: maximum size is 50MB"})
+        if total <= _MAX_UPLOAD_SIZE:
+            chunks.append(chunk)
+    if total > _MAX_UPLOAD_SIZE:
+        return JSONResponse(status_code=413, content={"error": "File too large: maximum size is 50MB"})
+    content = b"".join(chunks)
+
+    # Encode
     b64 = base64.b64encode(content).decode("ascii")
     mime_type = file.content_type or "application/octet-stream"
 
@@ -473,11 +571,57 @@ app.add_middleware(
 )
 
 
+class _ConsoleUvicornServer(uvicorn.Server):
+    """uvicorn.Server that leaves signal handling to the console.
+
+    uvicorn installs its own SIGINT/SIGTERM handlers in `capture_signals()`
+    when starting the event loop, which would override the console's
+    handlers; no-op that context so `run()` owns the signals.
+    """
+
+    @contextlib.contextmanager
+    def capture_signals(self):
+        yield
+
+
 def run() -> None:
-    """Start the FastAPI server using uvicorn."""
+    """Start the FastAPI server using uvicorn with graceful shutdown.
+
+    The first SIGINT/SIGTERM makes uvicorn stop accepting connections and
+    drain in-flight requests. If an open connection (e.g. an SSE stream)
+    blocks the drain, a daemon timer force-exits the process with status 1
+    after _SHUTDOWN_FORCE_TIMEOUT seconds. A signal-initiated shutdown
+    always exits with status 1, even when the graceful drain completes in
+    time.
+    """
     host = get_host()
     port = get_port()
-    uvicorn.run(app, host=host, port=port)
+    server = _ConsoleUvicornServer(uvicorn.Config(app, host=host, port=port))
+    state = {"signalled": False}
+
+    def _shutdown(signum, frame):
+        # Idempotent: repeated signals are ignored; the force-exit timer
+        # armed on the first signal is the escalation path.
+        if state["signalled"]:
+            return
+        state["signalled"] = True
+        trace_logger.logger.info(
+            "Shutdown requested (signal %d); draining connections "
+            "(force exit in %.1fs if blocked)",
+            signum, _SHUTDOWN_FORCE_TIMEOUT,
+        )
+        server.should_exit = True
+        timer = threading.Timer(_SHUTDOWN_FORCE_TIMEOUT, lambda: os._exit(1))
+        timer.daemon = True  # must not hold a clean exit open
+        timer.start()
+
+    signal.signal(signal.SIGINT, _shutdown)
+    signal.signal(signal.SIGTERM, _shutdown)
+    server.run()
+    if state["signalled"]:
+        # Graceful drain completed before the force-exit timer fired; still
+        # report a non-zero exit status because the stop was signal-driven.
+        sys.exit(1)
 
 
 if __name__ == "__main__":

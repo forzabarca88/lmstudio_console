@@ -58,8 +58,8 @@ const transformedHistory = historySource
         'const { state, saveSettings, saveSessionHistory, saveCurrentSession, abortActiveRequest } = stateModule;'
     )
     .replace(
-        /import\s*{\s*showToast\s*}\s*from\s*"\.\/ui\.js";?/,
-        'const { showToast } = uiModule;'
+        /import\s*{\s*showToast\s*,\s*escapeHtml\s*}\s*from\s*"\.\/ui\.js";?/,
+        'const { showToast, escapeHtml } = uiModule;'
     )
     .replace(
         /import\s*{\s*enableChatControls\s*}\s*from\s*"\.\/connection\.js";?/,
@@ -421,6 +421,159 @@ await runTest("saveCurrentSession updates existing session id", () => {
     assert.equal(stateModule.state.currentSessionId, sessionId);
 });
 
+// ─── Storage quota & sanitization ──────────────────────────────────────────────
+
+// localStorage mock that enforces a total size limit, throwing the same
+// QuotaExceededError DOMException a real browser throws.
+function makeQuotaLocalStorage(limit) {
+    const store = new Map();
+    let size = 0;
+    return {
+        getItem(k) { return store.has(k) ? store.get(k) : null; },
+        setItem(k, v) {
+            v = String(v);
+            const old = store.has(k) ? store.get(k).length : 0;
+            if (size - old + v.length > limit) {
+                throw new DOMException("The quota exceeded", "QuotaExceededError");
+            }
+            size += v.length - old;
+            store.set(k, v);
+        },
+        removeItem(k) {
+            if (store.has(k)) { size -= store.get(k).length; store.delete(k); }
+        },
+        clear() { store.clear(); size = 0; },
+    };
+}
+
+await runTest("saveCurrentSession strips image data URLs from persisted history", () => {
+    globalThis.localStorage.clear();
+    stateModule.state.sessionHistory = [];
+    const bigB64 = "A".repeat(20000);
+    stateModule.state.chatMessages = [
+        { role: "user", content: [
+            { type: "text", text: "Look at this" },
+            { type: "image_url", image_url: { url: `data:image/png;base64,${bigB64}` } },
+        ] },
+        { role: "assistant", content: "Nice image!" },
+    ];
+    stateModule.state.selectedModel = "vision-model";
+    stateModule.state.currentSessionId = null;
+
+    stateModule.saveCurrentSession();
+
+    const storedRaw = globalThis.localStorage.getItem("lm_console_history");
+    const stored = JSON.parse(storedRaw);
+    assert.ok(!storedRaw.includes("data:image"), "persisted history must not contain base64 image data");
+    assert.equal(stored.length, 1);
+    const parts = stored[0].messages[0].content;
+    assert.equal(parts[0].text, "Look at this");
+    assert.equal(parts[1].type, "text");
+    assert.match(parts[1].text, /\[image attached: image\/png\]/);
+    // The live in-memory session keeps the full payload for the active
+    // conversation (multimodal context is preserved for the current chat).
+    assert.equal(
+        stateModule.state.chatMessages[0].content[1].image_url.url,
+        `data:image/png;base64,${bigB64}`
+    );
+});
+
+await runTest("saveCurrentSession strips audio and file data URLs from persisted history", () => {
+    globalThis.localStorage.clear();
+    stateModule.state.sessionHistory = [];
+    const bigAudio = "A".repeat(20000);
+    const bigPdf = "B".repeat(20000);
+    stateModule.state.chatMessages = [
+        { role: "user", content: [
+            { type: "text", text: "Listen and read" },
+            { type: "input_audio", file_data: `data:audio/wav;base64,${bigAudio}` },
+            { type: "input_file", file_data: `data:application/pdf;base64,${bigPdf}` },
+        ] },
+        { role: "assistant", content: "Got both." },
+    ];
+    stateModule.state.selectedModel = "multimodal-model";
+    stateModule.state.currentSessionId = null;
+
+    stateModule.saveCurrentSession();
+
+    const storedRaw = globalThis.localStorage.getItem("lm_console_history");
+    const stored = JSON.parse(storedRaw);
+    assert.ok(!storedRaw.includes("data:audio"), "persisted history must not contain base64 audio data");
+    assert.ok(!storedRaw.includes("data:application"), "persisted history must not contain base64 file data");
+    assert.ok(!storedRaw.includes(bigAudio.slice(0, 1000)), "audio base64 payload must not be persisted");
+    assert.ok(!storedRaw.includes(bigPdf.slice(0, 1000)), "file base64 payload must not be persisted");
+    assert.equal(stored.length, 1);
+    const parts = stored[0].messages[0].content;
+    assert.equal(parts[0].text, "Listen and read");
+    assert.equal(parts[1].type, "text");
+    assert.match(parts[1].text, /\[input_audio attached: audio\/wav\]/);
+    assert.equal(parts[2].type, "text");
+    assert.match(parts[2].text, /\[input_file attached: application\/pdf\]/);
+    // The live in-memory session keeps the full payloads.
+    assert.equal(
+        stateModule.state.chatMessages[0].content[1].file_data,
+        `data:audio/wav;base64,${bigAudio}`
+    );
+    assert.equal(
+        stateModule.state.chatMessages[0].content[2].file_data,
+        `data:application/pdf;base64,${bigPdf}`
+    );
+});
+
+await runTest("history persistence drops oldest sessions when quota exceeded", () => {
+    const original = globalThis.localStorage;
+    // ~540 chars per session: 3 sessions (~1620) exceed the limit, 2 fit.
+    globalThis.localStorage = makeQuotaLocalStorage(1300);
+    const warnings = [];
+    globalThis.window.addEventListener("lmconsole:storage-warning", (e) => warnings.push(e.detail));
+
+    try {
+        const mk = (id) => ({
+            id,
+            createdAt: new Date().toISOString(),
+            model: "m",
+            messages: [{ role: "user", content: "x".repeat(400) }],
+            preview: id,
+        });
+        stateModule.state.sessionHistory = [mk("newest"), mk("middle"), mk("oldest")];
+
+        stateModule.saveSessionHistory(); // must not throw
+
+        const stored = JSON.parse(globalThis.localStorage.getItem("lm_console_history"));
+        assert.equal(stored.length, 2, "oldest session should have been dropped");
+        assert.equal(stored[0].id, "newest", "newest session must survive");
+        assert.equal(stateModule.state.sessionHistory.length, 2, "in-memory history syncs with persisted");
+        assert.ok(warnings.some(w => w.historyChanged), "user should be warned about trimming");
+    } finally {
+        globalThis.localStorage = original;
+    }
+});
+
+await runTest("loadSessionHistory sanitizes legacy image data and re-persists", () => {
+    globalThis.localStorage.clear();
+    const legacy = [{
+        id: "legacy-1",
+        createdAt: new Date().toISOString(),
+        model: "vision-model",
+        messages: [
+            { role: "user", content: [
+                { type: "text", text: "img" },
+                { type: "image_url", image_url: { url: `data:image/jpeg;base64,${"Z".repeat(5000)}` } },
+            ] },
+        ],
+        preview: "img",
+    }];
+    globalThis.localStorage.setItem("lm_console_history", JSON.stringify(legacy));
+
+    stateModule.loadSessionHistory();
+
+    const parts = stateModule.state.sessionHistory[0].messages[0].content;
+    assert.equal(parts[1].type, "text", "legacy data URL replaced with placeholder");
+    const storedRaw = globalThis.localStorage.getItem("lm_console_history");
+    assert.ok(!storedRaw.includes("data:image"), "stored value re-persisted without base64 data");
+    assert.ok(storedRaw.length < JSON.stringify(legacy).length, "re-persisted value is smaller");
+});
+
 // ─── Theme tests ───────────────────────────────────────────────
 
 console.log("\nTheme module:");
@@ -592,6 +745,13 @@ await runTest("escapeHtml sanitizes input", () => {
     assert.equal(uiModule.escapeHtml("<script>alert('xss')</script>"),
                  "&lt;script&gt;alert(&#39;xss&#39;)&lt;/script&gt;");
     assert.equal(uiModule.escapeHtml("A & B"), "A &amp; B");
+    // Attribute-breakout payload: no raw quote characters may survive, and
+    // < > must be escaped, so output is safe inside HTML attributes too.
+    const breakout = uiModule.escapeHtml('"><img src=x onerror=alert(1)>');
+    assert.ok(!breakout.includes('"'), "no raw double quotes may survive");
+    assert.ok(!breakout.includes("'"), "no raw single quotes may survive");
+    assert.ok(!breakout.includes("<"), "< must be escaped");
+    assert.ok(!breakout.includes(">"), "> must be escaped");
 });
 
 await runTest("updateMetrics formats values", () => {

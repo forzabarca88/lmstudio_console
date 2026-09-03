@@ -504,9 +504,12 @@ select {
     padding: 10px 16px;
 }
 
-/* Sidebar toggle — sharp corners */
-.sidebar-toggle {
-    border-radius: 3px 0 0 3px;
+/* Sidebar toggle — sharp corners. Scoped to the desktop chevron tab;
+   the mobile full-width toggle stays square (see base.css). */
+@media (min-width: 769px) {
+    .sidebar-toggle {
+        border-radius: 3px 0 0 3px;
+    }
 }
 
 /* Range value — tighter */

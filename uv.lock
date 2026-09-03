@@ -994,6 +994,7 @@ name = "lmstudio-console"
 version = "0.1.0"
 source = { virtual = "." }
 dependencies = [
+    { name = "anyio" },
     { name = "ddgs" },
     { name = "fastapi" },
     { name = "httpx" },
@@ -1008,6 +1009,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "anyio", specifier = ">=4.0" },
     { name = "ddgs", specifier = ">=0.1" },
     { name = "fastapi", specifier = ">=0.115" },
     { name = "httpx", specifier = ">=0.27" },

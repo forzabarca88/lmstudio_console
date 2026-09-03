@@ -3,7 +3,7 @@
  */
 
 import { state, saveSettings, saveSessionHistory, saveCurrentSession } from "./state.js";
-import { showToast } from "./ui.js";
+import { showToast, escapeHtml } from "./ui.js";
 import { enableChatControls } from "./connection.js";
 import { appendMessage, cancelAndResetUI } from "./chat.js";
 
@@ -161,15 +161,4 @@ export function deleteSession(dom, sessionId) {
     saveSessionHistory();
     renderHistoryList(dom);
     showToast("Session deleted", "info");
-}
-
-/**
- * Escape HTML special characters.
- * @param {string} str
- * @returns {string}
- */
-function escapeHtml(str) {
-    const div = document.createElement("div");
-    div.textContent = str;
-    return div.innerHTML;
 }

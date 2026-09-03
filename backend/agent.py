@@ -11,12 +11,16 @@ to Pydantic AI's internal format and runs the agent.
 from __future__ import annotations
 
 import asyncio
+import base64
+import contextlib
 import json
 import logging
 from typing import Any, AsyncIterable
 
 from pydantic_ai import Agent, AgentRunResultEvent
 from pydantic_ai.messages import (
+    AudioUrl,
+    DocumentUrl,
     FunctionToolCallEvent,
     FunctionToolResultEvent,
     ImageUrl,
@@ -49,13 +53,46 @@ from backend.tools import _agent
 
 # --- Message conversion ---
 
+# Audio media types Pydantic AI's OpenAI mapping accepts (it asserts
+# wav/mp3 when building the chat-completion input_audio part).
+_AUDIO_MEDIA_TYPES = frozenset({"audio/wav", "audio/mpeg"})
+
+# Document media types passed through as DocumentUrl; everything else
+# degrades to a text placeholder so the model sees something meaningful.
+_DOCUMENT_MEDIA_TYPES = frozenset({
+    "application/pdf",
+    "text/csv",
+    "text/markdown",
+    "text/html",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    "application/msword",
+    "application/vnd.ms-excel",
+})
+
+
+def _media_type_from_data_uri(s: str) -> str:
+    """Extract the media type from a ``data:<mime>;base64,...`` URI.
+
+    Returns "" when ``s`` is not a data URI.
+    """
+    if not isinstance(s, str) or not s.startswith("data:"):
+        return ""
+    return s[len("data:"):].split(";", 1)[0]
+
 
 def _convert_user_content(content: Any) -> list[UserContent]:
     """Convert OpenAI-compatible multimodal content to Pydantic AI UserContent list.
 
     Handles:
     - Plain string → [TextContent(content=string)]
-    - Array of parts → mapped to TextContent / ImageUrl
+    - Array of parts → mapped to TextContent / ImageUrl / AudioUrl / DocumentUrl
+
+    ``input_audio`` parts map to AudioUrl only for the formats Pydantic AI's
+    OpenAI mapping accepts (wav/mp3); other audio types degrade to a text
+    placeholder. ``input_file`` parts inline text/plain payloads as text, map
+    known document types to DocumentUrl, and degrade anything else to a text
+    placeholder.
     """
     if isinstance(content, str):
         return [TextContent(content=content)]
@@ -69,9 +106,41 @@ def _convert_user_content(content: Any) -> list[UserContent]:
             elif part_type == "image_url":
                 url = part["image_url"].get("url", "")
                 parts.append(ImageUrl(url=url))
-            logging.getLogger(__name__).warning(
-                f"Unsupported content type: {part_type!r}"
-            )
+            elif part_type == "input_audio":
+                data_uri = part.get("file_data") or part.get("file") or ""
+                media_type = _media_type_from_data_uri(data_uri)
+                if media_type in _AUDIO_MEDIA_TYPES:
+                    parts.append(AudioUrl(url=data_uri, media_type=media_type))
+                else:
+                    parts.append(TextContent(
+                        content=(
+                            f"[Audio attachment ({media_type or 'unknown'})"
+                            " — format not supported by the model]"
+                        )
+                    ))
+            elif part_type == "input_file":
+                data_uri = part.get("file_data") or part.get("file") or ""
+                media_type = _media_type_from_data_uri(data_uri)
+                if media_type == "text/plain":
+                    payload = data_uri.split(",", 1)[1] if "," in data_uri else ""
+                    try:
+                        decoded = base64.b64decode(payload).decode("utf-8", "replace")
+                    except ValueError:
+                        decoded = ""
+                    parts.append(TextContent(content=decoded))
+                elif media_type in _DOCUMENT_MEDIA_TYPES:
+                    parts.append(DocumentUrl(url=data_uri, media_type=media_type))
+                else:
+                    parts.append(TextContent(
+                        content=(
+                            f"[File attachment ({media_type or 'unknown'})"
+                            " — format not supported by the model]"
+                        )
+                    ))
+            else:
+                logging.getLogger(__name__).warning(
+                    f"Unsupported content type: {part_type!r}"
+                )
         return parts if parts else [TextContent(content="")]
 
     return [TextContent(content=str(content))]
@@ -268,13 +337,18 @@ class ChatAgent:
         # duplicates when combined with the system_prompt parameter.
         pai_messages, extracted_system_prompts = _openai_messages_to_pai_messages(messages)
 
-        # Merge system prompts: explicit parameter takes priority, append extracted ones.
-        combined_system = system_prompt.strip() if system_prompt.strip() else None
-        if extracted_system_prompts:
-            if combined_system:
-                combined_system += "\n\n" + "\n\n".join(extracted_system_prompts)
-            else:
-                combined_system = "\n\n".join(extracted_system_prompts)
+        # Merge system prompts: the explicit system_prompt parameter comes
+        # first, followed by any system prompts extracted from `messages`.
+        # Deduplicate so a client that sends the same prompt both as
+        # system_prompt and as a system message gets a single prompt.
+        parts = []
+        if system_prompt and system_prompt.strip():
+            parts.append(system_prompt.strip())
+        for p in extracted_system_prompts:
+            p = p.strip()
+            if p and p not in parts:
+                parts.append(p)
+        combined_system = "\n\n".join(parts) if parts else None
 
         # Build model for this request
         model_obj = OpenAIChatModel(model, provider=self._provider)
@@ -346,7 +420,44 @@ class ChatAgent:
                 message_history=pai_messages,
                 capabilities=[Thinking()],
             ) as events:
-                async for event in events:
+                # Race each next-event fetch against the cancel signal so a
+                # silent upstream (no deltas in flight) is cancelled promptly
+                # instead of waiting for the next token to arrive.
+                anext_task = None
+                while True:
+                    if cancel_event is None:
+                        try:
+                            event = await events.__anext__()
+                        except StopAsyncIteration:
+                            break
+                    else:
+                        if anext_task is None:
+                            anext_task = asyncio.create_task(events.__anext__())
+                        wait_task = asyncio.create_task(cancel_event.wait())
+                        done, _ = await asyncio.wait(
+                            {anext_task, wait_task},
+                            return_when=asyncio.FIRST_COMPLETED,
+                        )
+                        if wait_task in done:
+                            # Cancellation won the race: stop waiting on the
+                            # upstream and exit the event context, which
+                            # cancels the background Pydantic AI run and its
+                            # upstream HTTP stream.
+                            anext_task.cancel()
+                            with contextlib.suppress(asyncio.CancelledError):
+                                await anext_task
+                            anext_task = None
+                            cancelled = True
+                            break
+                        wait_task.cancel()
+                        with contextlib.suppress(asyncio.CancelledError):
+                            await wait_task
+                        try:
+                            event = anext_task.result()
+                        except StopAsyncIteration:
+                            anext_task = None
+                            break
+                        anext_task = None
                     if isinstance(event, PartStartEvent):
                         part = event.part
                         if isinstance(part, ThinkingPart):

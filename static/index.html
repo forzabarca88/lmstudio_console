@@ -10,117 +10,119 @@
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Space+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="/static/css/base.css">
 <link id="theme-stylesheet" rel="stylesheet" href="/static/css/theme-cyberpunk.css">
-<script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+<script src="/static/vendor/marked.min.js"></script>
+<script src="/static/vendor/purify.min.js"></script>
+<script src="/static/vendor/mermaid.min.js"></script>
 </head>
 <body>
 
 <aside class="sidebar" id="sidebar">
-    <div class="sidebar-header">
-        <div class="logo">
-            <span class="logo-icon">▶</span>
-            <span>lm_studio_console</span>
+    <div class="sidebar-scroll">
+        <div class="sidebar-header">
+            <div class="logo">
+                <span class="logo-icon">▶</span>
+                <span>lm_studio_console</span>
+            </div>
         </div>
-    </div>
 
-    <div class="status-bar">
-        <span class="status-dot" id="statusDot"></span>
-        <span class="status-text" id="statusText">Disconnected</span>
-    </div>
+        <div class="status-bar">
+            <span class="status-dot" id="statusDot"></span>
+            <span class="status-text" id="statusText">Disconnected</span>
+        </div>
 
-    <div class="section">
-        <div class="section-label">Connection</div>
-        <div class="field">
-            <label for="endpoint">Endpoint</label>
-            <input type="text" id="endpoint" placeholder="http://localhost:1234" value="http://localhost:1234">
-        </div>
-        <div class="field">
-            <label for="apiToken">API Token</label>
-            <input type="password" id="apiToken" placeholder="Optional">
-        </div>
-        <div class="btn-row">
-            <button class="btn btn-primary" id="connectBtn">Connect</button>
-        </div>
-    </div>
-
-    <div class="section">
-        <div class="section-label">Models</div>
-        <div class="btn-row" style="margin-bottom: 12px;">
-            <button class="btn" id="refreshModelsBtn">↻ Refresh</button>
-            <button class="btn btn-primary" id="loadModelBtn">Load</button>
-            <button class="btn btn-danger" id="unloadModelBtn">Unload</button>
-        </div>
-        <ul class="model-list" id="modelList">
-            <li class="empty-state" style="flex:unset;padding:20px 0;">
-                <div class="empty-subtitle">Connect to LM Studio to see available models</div>
-            </li>
-        </ul>
-    </div>
-
-    <button class="history-toggle" id="historyToggle">
-        <span>💬 History</span>
-        <span class="chevron">▼</span>
-    </button>
-    <div class="history-panel" id="historyPanel">
         <div class="section">
-            <div class="section-label">Session History</div>
-            <ul class="history-list" id="historyList">
+            <div class="section-label">Connection</div>
+            <div class="field">
+                <label for="endpoint">Endpoint</label>
+                <input type="text" id="endpoint" placeholder="http://localhost:1234" value="http://localhost:1234">
+            </div>
+            <div class="field">
+                <label for="apiToken">API Token</label>
+                <input type="password" id="apiToken" placeholder="Optional">
+            </div>
+            <div class="btn-row">
+                <button class="btn btn-primary" id="connectBtn">Connect</button>
+            </div>
+        </div>
+
+        <div class="section">
+            <div class="section-label">Models</div>
+            <div class="btn-row" style="margin-bottom: 12px;">
+                <button class="btn" id="refreshModelsBtn">↻ Refresh</button>
+                <button class="btn btn-primary" id="loadModelBtn">Load</button>
+                <button class="btn btn-danger" id="unloadModelBtn">Unload</button>
+            </div>
+            <ul class="model-list" id="modelList">
                 <li class="empty-state" style="flex:unset;padding:20px 0;">
-                    <div class="empty-subtitle">Chat sessions will appear here</div>
+                    <div class="empty-subtitle">Connect to LM Studio to see available models</div>
                 </li>
             </ul>
         </div>
-    </div>
 
-    <button class="settings-toggle" id="settingsToggle">
-        <span>⚙ Settings</span>
-        <span class="chevron">▼</span>
-    </button>
-    <div class="settings-panel" id="settingsPanel">
-        <div class="section">
-            <div class="section-label">Chat Settings</div>
-            <div class="field">
-                <label for="systemPrompt">System Prompt</label>
-                <textarea id="systemPrompt" placeholder="You are a helpful assistant."></textarea>
+        <button class="history-toggle" id="historyToggle">
+            <span>💬 History</span>
+            <span class="chevron">▼</span>
+        </button>
+        <div class="history-panel" id="historyPanel">
+            <div class="section">
+                <div class="section-label">Session History</div>
+                <ul class="history-list" id="historyList">
+                    <li class="empty-state" style="flex:unset;padding:20px 0;">
+                        <div class="empty-subtitle">Chat sessions will appear here</div>
+                    </li>
+                </ul>
             </div>
-            <div class="field">
-                <label for="temperature">Temperature</label>
-                <div class="range-row">
-                    <input type="range" id="temperature" min="0" max="2" step="0.05" value="0.7">
-                    <span class="range-value" id="temperatureValue">0.70</span>
+        </div>
+
+        <button class="settings-toggle" id="settingsToggle">
+            <span>⚙ Settings</span>
+            <span class="chevron">▼</span>
+        </button>
+        <div class="settings-panel" id="settingsPanel">
+            <div class="section">
+                <div class="section-label">Chat Settings</div>
+                <div class="field">
+                    <label for="systemPrompt">System Prompt</label>
+                    <textarea id="systemPrompt" placeholder="You are a helpful assistant."></textarea>
+                </div>
+                <div class="field">
+                    <label for="temperature">Temperature</label>
+                    <div class="range-row">
+                        <input type="range" id="temperature" min="0" max="2" step="0.05" value="0.7">
+                        <span class="range-value" id="temperatureValue">0.70</span>
+                    </div>
+                </div>
+                <div class="field">
+                    <label class="toggle-label">
+                        <input type="checkbox" id="toolCallToggle">
+                        <span class="toggle-slider"></span>
+                        <span class="toggle-text">Enable tool calls</span>
+                    </label>
+                </div>
+                <div class="field theme-switcher">
+                    <label for="themeSelect">Theme</label>
+                    <select id="themeSelect">
+                        <option value="cyberpunk">Cyberpunk</option>
+                        <option value="light">Light Professional</option>
+                        <option value="warm">Warm Minimal</option>
+                    </select>
                 </div>
             </div>
-            <div class="field">
-                <label class="toggle-label">
-                    <input type="checkbox" id="toolCallToggle">
-                    <span class="toggle-slider"></span>
-                    <span class="toggle-text">Enable tool calls</span>
-                </label>
-            </div>
-            <div class="field theme-switcher">
-                <label for="themeSelect">Theme</label>
-                <select id="themeSelect">
-                    <option value="cyberpunk">Cyberpunk</option>
-                    <option value="light">Light Professional</option>
-                    <option value="warm">Warm Minimal</option>
-                </select>
+        </div>
+
+        <button type="button" class="section-toggle" id="traceToggle">
+            <span>📋 Trace Log</span>
+            <span class="chevron">▼</span>
+        </button>
+        <div class="collapsible" id="tracePanel">
+            <div class="trace-log" id="traceLog"></div>
+            <div class="trace-controls">
+                <button type="button" id="traceClearBtn">Clear</button>
+                <button type="button" id="tracePauseBtn">Pause</button>
             </div>
         </div>
     </div>
-
-    <button type="button" class="section-toggle" id="traceToggle">
-        <span>📋 Trace Log</span>
-        <span class="chevron">▼</span>
-    </button>
-    <div class="collapsible" id="tracePanel">
-        <div class="trace-log" id="traceLog"></div>
-        <div class="trace-controls">
-            <button type="button" id="traceClearBtn">Clear</button>
-            <button type="button" id="tracePauseBtn">Pause</button>
-        </div>
-    </div>
-
-    <button class="sidebar-toggle" id="sidebarToggle">
+    <button type="button" class="sidebar-toggle" id="sidebarToggle">
         <span>Toggle sidebar</span>
         <span class="sidebar-chevron">◀</span>
     </button>

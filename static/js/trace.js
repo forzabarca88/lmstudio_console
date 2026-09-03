@@ -3,6 +3,8 @@
  * log entries, auto-scroll, pause/resume, and exponential backoff reconnect.
  */
 
+import { escapeHtml } from "./ui.js";
+
 let eventSource = null;
 let paused = false;
 let reconnectDelay = 1000;
@@ -115,14 +117,3 @@ export function formatTraceEntry(entry) {
         `<span class="trace-message">${message}</span></div>`;
 }
 
-/**
- * Escape HTML special characters to prevent XSS.
- */
-function escapeHtml(str) {
-    return str
-        .replace(/&/g, "&amp;")
-        .replace(/</g, "&lt;")
-        .replace(/>/g, "&gt;")
-        .replace(/"/g, "&quot;")
-        .replace(/'/g, "&#39;");
-}
