@@ -67,6 +67,7 @@ The interface must be modern and responsive, with striking design.
 - Pressing CTRL + C for the server-side process must kill all connections and stop the server (force stop after 5 seconds).
 - UI must have `responsive` design which works across a wide range of screen sizes such as large monitors, laptops, tablets, or mobile phones.
 - UI elements other than the core chat window where the user sends and receives messages, should all be collapsable or be able to be hidden.
+- Generated messages in the UI (including thinking) should automatically scroll to the latest content while streaming.
 
 ### Minimum Test Cases
 
