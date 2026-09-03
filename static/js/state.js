@@ -47,14 +47,15 @@ function dispatchStorageWarning(detail) {
 }
 
 /**
- * Replace inlined image data URLs with lightweight text placeholders.
+ * Replace inlined media data URLs with lightweight text placeholders.
  *
  * Live multimodal messages embed the full base64 payload of every attached
- * image (easily megabytes). Persisting those to localStorage exhausts the
- * browser's ~5MB origin quota, so stored sessions carry a placeholder
- * instead. The in-memory session keeps the full payload for the live
- * conversation; only the persisted copy is reduced. Consequence: continuing
- * a vision session later restores the placeholder text, not the image.
+ * image, audio, or file (easily megabytes). Persisting those to
+ * localStorage exhausts the browser's ~5MB origin quota, so stored sessions
+ * carry a placeholder instead. The in-memory session keeps the full payload
+ * for the live conversation; only the persisted copy is reduced.
+ * Consequence: continuing a multimodal session later restores the
+ * placeholder text, not the media.
  * @param {Array} messages - OpenAI-compatible messages.
  * @returns {Array} Shallow-copied messages safe to persist.
  */
@@ -68,6 +69,13 @@ function sanitizeMessagesForStorage(messages) {
                 if (typeof url === "string" && url.startsWith("data:")) {
                     const mime = url.slice(5).split(";")[0] || "image";
                     return { type: "text", text: `[image attached: ${mime}]` };
+                }
+            }
+            if (part && (part.type === "input_audio" || part.type === "input_file")) {
+                const data = part.file_data || part.file;
+                if (typeof data === "string" && data.startsWith("data:")) {
+                    const mime = data.slice(5).split(";")[0] || part.type;
+                    return { type: "text", text: `[${part.type} attached: ${mime}]` };
                 }
             }
             return part;

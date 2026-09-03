@@ -58,8 +58,8 @@ const transformedHistory = historySource
         'const { state, saveSettings, saveSessionHistory, saveCurrentSession, abortActiveRequest } = stateModule;'
     )
     .replace(
-        /import\s*{\s*showToast\s*}\s*from\s*"\.\/ui\.js";?/,
-        'const { showToast } = uiModule;'
+        /import\s*{\s*showToast\s*,\s*escapeHtml\s*}\s*from\s*"\.\/ui\.js";?/,
+        'const { showToast, escapeHtml } = uiModule;'
     )
     .replace(
         /import\s*{\s*enableChatControls\s*}\s*from\s*"\.\/connection\.js";?/,
@@ -478,6 +478,48 @@ await runTest("saveCurrentSession strips image data URLs from persisted history"
     );
 });
 
+await runTest("saveCurrentSession strips audio and file data URLs from persisted history", () => {
+    globalThis.localStorage.clear();
+    stateModule.state.sessionHistory = [];
+    const bigAudio = "A".repeat(20000);
+    const bigPdf = "B".repeat(20000);
+    stateModule.state.chatMessages = [
+        { role: "user", content: [
+            { type: "text", text: "Listen and read" },
+            { type: "input_audio", file_data: `data:audio/wav;base64,${bigAudio}` },
+            { type: "input_file", file_data: `data:application/pdf;base64,${bigPdf}` },
+        ] },
+        { role: "assistant", content: "Got both." },
+    ];
+    stateModule.state.selectedModel = "multimodal-model";
+    stateModule.state.currentSessionId = null;
+
+    stateModule.saveCurrentSession();
+
+    const storedRaw = globalThis.localStorage.getItem("lm_console_history");
+    const stored = JSON.parse(storedRaw);
+    assert.ok(!storedRaw.includes("data:audio"), "persisted history must not contain base64 audio data");
+    assert.ok(!storedRaw.includes("data:application"), "persisted history must not contain base64 file data");
+    assert.ok(!storedRaw.includes(bigAudio.slice(0, 1000)), "audio base64 payload must not be persisted");
+    assert.ok(!storedRaw.includes(bigPdf.slice(0, 1000)), "file base64 payload must not be persisted");
+    assert.equal(stored.length, 1);
+    const parts = stored[0].messages[0].content;
+    assert.equal(parts[0].text, "Listen and read");
+    assert.equal(parts[1].type, "text");
+    assert.match(parts[1].text, /\[input_audio attached: audio\/wav\]/);
+    assert.equal(parts[2].type, "text");
+    assert.match(parts[2].text, /\[input_file attached: application\/pdf\]/);
+    // The live in-memory session keeps the full payloads.
+    assert.equal(
+        stateModule.state.chatMessages[0].content[1].file_data,
+        `data:audio/wav;base64,${bigAudio}`
+    );
+    assert.equal(
+        stateModule.state.chatMessages[0].content[2].file_data,
+        `data:application/pdf;base64,${bigPdf}`
+    );
+});
+
 await runTest("history persistence drops oldest sessions when quota exceeded", () => {
     const original = globalThis.localStorage;
     // ~540 chars per session: 3 sessions (~1620) exceed the limit, 2 fit.
@@ -703,6 +745,13 @@ await runTest("escapeHtml sanitizes input", () => {
     assert.equal(uiModule.escapeHtml("<script>alert('xss')</script>"),
                  "&lt;script&gt;alert(&#39;xss&#39;)&lt;/script&gt;");
     assert.equal(uiModule.escapeHtml("A & B"), "A &amp; B");
+    // Attribute-breakout payload: no raw quote characters may survive, and
+    // < > must be escaped, so output is safe inside HTML attributes too.
+    const breakout = uiModule.escapeHtml('"><img src=x onerror=alert(1)>');
+    assert.ok(!breakout.includes('"'), "no raw double quotes may survive");
+    assert.ok(!breakout.includes("'"), "no raw single quotes may survive");
+    assert.ok(!breakout.includes("<"), "< must be escaped");
+    assert.ok(!breakout.includes(">"), "> must be escaped");
 });
 
 await runTest("updateMetrics formats values", () => {

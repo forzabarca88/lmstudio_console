@@ -8,7 +8,7 @@
 
 import { state, saveSettings, saveCurrentSession, saveSessionHistory, abortActiveRequest } from "./state.js";
 import { apiCallChat, apiCall } from "./api.js";
-import { showToast, scrollToBottom, autoResizeInput, updateMetrics } from "./ui.js";
+import { showToast, scrollToBottom, autoResizeInput, updateMetrics, escapeHtml } from "./ui.js";
 import { renderHistoryList } from "./history.js";
 
 // Initialize mermaid
@@ -16,7 +16,10 @@ try {
     mermaid.initialize({
         startOnLoad: false,
         theme: "dark",
-        securityLevel: "loose",
+        // "strict" disables click handlers and other interactive features in
+        // rendered diagrams, limiting the attack surface of model-generated
+        // diagram definitions.
+        securityLevel: "strict",
     });
 } catch (e) {
     // mermaid may not be loaded yet
@@ -218,17 +221,13 @@ function buildMultimodalContent(text, attachments) {
 
     for (const att of attachments) {
         if (att.uploaded) {
+            const dataUri = `data:${att.mimeType};base64,${att.base64}`;
             if (att.isImage) {
-                content.push({
-                    type: "image_url",
-                    image_url: { url: `data:${att.mimeType};base64,${att.base64}` },
-                });
+                content.push({ type: "image_url", image_url: { url: dataUri } });
+            } else if (att.mimeType.startsWith("audio/")) {
+                content.push({ type: "input_audio", file_data: dataUri });
             } else {
-                // Non-image files: include as text with metadata
-                content.push({
-                    type: "text",
-                    text: `[File: ${att.name} (${att.mimeType}, ${att.size} bytes)]`,
-                });
+                content.push({ type: "input_file", file_data: dataUri });
             }
         }
     }
@@ -297,6 +296,39 @@ export async function sendMessage(dom) {
     let assistantEl = null;
     let contentEl = null;
     let assistantContent = "";
+
+    // Throttled, race-free streaming render (Issue 18): re-running
+    // renderContent() on the ENTIRE message for every streamed token is
+    // O(n^2) markdown re-parsing. Bounds renders to at most one per
+    // CONTENT_RENDER_INTERVAL_MS and serializes them on a promise chain so
+    // a slow async mermaid.render can never interleave with a newer
+    // innerHTML write. The final render always emits the complete content,
+    // so a finished message renders identically to the old per-delta path.
+    const CONTENT_RENDER_INTERVAL_MS = 100;
+    let renderChain = Promise.resolve();
+    let renderPending = false;
+    let lastRenderAt = 0;
+
+    function scheduleContentRender() {
+        const now = performance.now();
+        if (now - lastRenderAt >= CONTENT_RENDER_INTERVAL_MS) {
+            lastRenderAt = now;
+            renderPending = false;
+            renderChain = renderChain
+                .then(() => renderContent(contentEl, assistantContent))
+                .catch(() => {});
+        } else {
+            renderPending = true;   // a later render will pick up full content
+        }
+    }
+
+    async function awaitFinalContentRender() {
+        renderChain = renderChain
+            .then(() => renderPending ? renderContent(contentEl, assistantContent) : undefined)
+            .catch(() => {});
+        renderPending = false;
+        await renderChain;
+    }
 
     /**
      * Create the assistant message placeholder.
@@ -547,12 +579,9 @@ export async function sendMessage(dom) {
         }
         dom.chatMetrics.style.display = "flex";
 
-        // Build messages array with system prompt
-        const messages = [];
-        if (state.systemPrompt.trim()) {
-            messages.push({ role: "system", content: state.systemPrompt });
-        }
-        messages.push(...state.chatMessages);
+        // System prompt is sent separately via body.system_prompt and injected
+        // server-side; do not also prepend it as a system message.
+        const messages = [...state.chatMessages];
 
         // Build chat request body
         const body = {
@@ -697,7 +726,9 @@ export async function sendMessage(dom) {
                                 tokenCount++;
                                 // Backend emits incremental deltas for TextPart, so we accumulate.
                                 assistantContent += delta;
-                                renderContent(contentEl, assistantContent);
+                                // Throttled: at most one full re-render per interval; the
+                                // final render after the stream ends is always complete.
+                                scheduleContentRender();
                                 scrollToBottom(dom.chatMessages);
 
                                 if (!firstTokenTime) {
@@ -752,8 +783,10 @@ export async function sendMessage(dom) {
         state.chatMessages.push(assistantMsg);
         state.metrics = { ...metrics };
 
-        // Content was already rendered in real-time during the stream,
-        // so no need to re-render here
+        // Flush the throttled render chain so the final document is always
+        // fully rendered, even if the last delta was throttled away (this is
+        // a no-op when no render was deferred).
+        await awaitFinalContentRender();
 
         // Save session to history
         saveCurrentSession();
@@ -982,6 +1015,17 @@ export function cancelAndResetUI(dom) {
 }
 
 /**
+ * Set an element's innerHTML, sanitizing it with DOMPurify when available.
+ * Model output is untrusted: sanitizing strips <script> tags, event-handler
+ * attributes, and other XSS vectors before the HTML touches the DOM.
+ * @param {HTMLElement} el - The element to update
+ * @param {string} html - HTML markup to assign
+ */
+function _setHtml(el, html) {
+    el.innerHTML = (typeof DOMPurify !== "undefined") ? DOMPurify.sanitize(html) : html;
+}
+
+/**
  * Render content with markdown and mermaid support.
  * @param {HTMLElement} el - The element to render into
  * @param {string} content - Raw markdown content
@@ -991,15 +1035,19 @@ export async function renderContent(el, content) {
     const mermaidRegex = /```mermaid\s*([\s\S]*?)```/g;
     const hasMermaid = mermaidRegex.test(content);
 
-    if (hasMermaid) {
-        el.innerHTML = marked.parse(content);
+    // Mermaid is a pinned CDN script; if it failed to load (offline), fall
+    // back to plain sanitized markdown so content still renders.
+    if (hasMermaid && typeof mermaid !== "undefined") {
+        _setHtml(el, marked.parse(content));
 
         const preElements = el.querySelectorAll("pre");
         let mermaidId = 0;
 
         for (const pre of preElements) {
             const code = pre.querySelector("code");
-            if (code && code.classList.contains("mermaid")) {
+            // marked renders ```mermaid fences as class="language-mermaid";
+            // accept a bare "mermaid" class too for defensive coverage.
+            if (code && (code.classList.contains("mermaid") || code.classList.contains("language-mermaid"))) {
                 const graphDef = code.textContent;
                 const svgId = `mermaid-${mermaidId++}`;
 
@@ -1008,7 +1056,7 @@ export async function renderContent(el, content) {
                     pre.classList.add("mermaid-pre");
                     const svgDiv = document.createElement("div");
                     svgDiv.className = "mermaid";
-                    svgDiv.innerHTML = svg;
+                    _setHtml(svgDiv, svg);
                     pre.parentNode.insertBefore(svgDiv, pre.nextSibling);
                 } catch (e) {
                     pre.classList.remove("mermaid-pre");
@@ -1016,7 +1064,7 @@ export async function renderContent(el, content) {
             }
         }
     } else {
-        el.innerHTML = marked.parse(content);
+        _setHtml(el, marked.parse(content));
     }
 }
 
@@ -1107,15 +1155,4 @@ export function appendMessage(dom, msg, role, attachments = []) {
     dom.chatMessages.appendChild(el);
     scrollToBottom(dom.chatMessages);
     return el;
-}
-
-/**
- * Escape HTML special characters.
- * @param {string} str
- * @returns {string}
- */
-function escapeHtml(str) {
-    const div = document.createElement("div");
-    div.textContent = str;
-    return div.innerHTML;
 }

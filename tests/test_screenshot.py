@@ -15,6 +15,8 @@ Run: uv run python -m unittest tests.test_screenshot -v
 import os
 import sys
 import json
+import struct
+import hashlib
 import unittest
 import subprocess
 import time
@@ -180,6 +182,42 @@ class TestScreenshot(unittest.TestCase):
         self.page.screenshot(path=path)
         return path
 
+    def _assert_screenshot_png(self, path, expected_w, expected_h,
+                               min_bytes=5 * 1024):
+        """Assert a saved screenshot is a real, well-formed PNG (Issue 19).
+
+        Parses the PNG with stdlib only (no Pillow): the 8-byte PNG
+        signature, a minimum file size (a blank/failed render is tiny),
+        and the IHDR width/height (big-endian uint32 at byte offsets 16
+        and 20) which must equal the test's viewport dimensions exactly.
+        """
+        self.assertTrue(os.path.exists(path), f"Screenshot missing: {path}")
+        with open(path, "rb") as f:
+            data = f.read()
+        self.assertGreaterEqual(
+            len(data), min_bytes,
+            f"Screenshot too small ({len(data)} bytes < {min_bytes} bytes); "
+            f"render may be blank or failed: {path}",
+        )
+        self.assertEqual(
+            data[:8], b"\x89PNG\r\n\x1a\n",
+            f"Screenshot is not a valid PNG (bad signature): {path}",
+        )
+        width, height = struct.unpack(">II", data[16:24])
+        self.assertEqual(
+            (width, height), (expected_w, expected_h),
+            f"Screenshot dimensions {width}x{height} do not match expected "
+            f"viewport {expected_w}x{expected_h}: {path}",
+        )
+
+    def _png_sha256(self, path):
+        """Return the sha256 hex digest of a PNG file (differential checks)."""
+        digest = hashlib.sha256()
+        with open(path, "rb") as f:
+            for chunk in iter(lambda: f.read(65536), b""):
+                digest.update(chunk)
+        return digest.hexdigest()
+
     def _navigate(self):
         """Navigate to the app and wait for full load."""
         self.page.goto(BASE_URL)
@@ -319,7 +357,7 @@ class TestScreenshot(unittest.TestCase):
         # Verify page title
         self.assertEqual(self.page.title(), "LM Studio Console")
 
-        self._screenshot("01_page_loads")
+        self._assert_screenshot_png(self._screenshot("01_page_loads"), 1280, 720)
 
     def test_status_disconnected(self):
         """SPEC: Default status shows disconnected."""
@@ -332,7 +370,7 @@ class TestScreenshot(unittest.TestCase):
         dot_class = self.page.locator("#statusDot").get_attribute("class")
         self.assertNotEqual(dot_class, "connected")
 
-        self._screenshot("02_status_disconnected")
+        self._assert_screenshot_png(self._screenshot("02_status_disconnected"), 1280, 720)
 
     def test_sidebar_sections(self):
         """SPEC: Sidebar has Connection, Models, History, Settings sections."""
@@ -344,7 +382,7 @@ class TestScreenshot(unittest.TestCase):
         self.page.wait_for_selector("text=Session History")
         self.page.wait_for_selector("text=Chat Settings")
 
-        self._screenshot("03_sidebar_sections")
+        self._assert_screenshot_png(self._screenshot("03_sidebar_sections"), 1280, 720)
 
     def test_settings_panel(self):
         """SPEC: Settings panel has system prompt, temperature, tool call toggle."""
@@ -361,7 +399,7 @@ class TestScreenshot(unittest.TestCase):
         # Check the toggle slider is visible instead
         self.assertTrue(self.page.locator(".toggle-slider").is_visible())
 
-        self._screenshot("04_settings_panel")
+        self._assert_screenshot_png(self._screenshot("04_settings_panel"), 1280, 720)
 
     def test_history_panel(self):
         """SPEC: History panel is present and collapsible."""
@@ -374,7 +412,7 @@ class TestScreenshot(unittest.TestCase):
         # Verify history elements
         self.assertTrue(self.page.locator("#historyList").is_visible())
 
-        self._screenshot("05_history_panel")
+        self._assert_screenshot_png(self._screenshot("05_history_panel"), 1280, 720)
 
     def test_chat_input_area(self):
         """SPEC: Chat input has textarea, send button, attach button."""
@@ -394,7 +432,7 @@ class TestScreenshot(unittest.TestCase):
         placeholder = chat_input.get_attribute("placeholder")
         self.assertIsNotNone(placeholder)
 
-        self._screenshot("06_chat_input_area")
+        self._assert_screenshot_png(self._screenshot("06_chat_input_area"), 1280, 720)
 
     def test_chat_metrics_hidden(self):
         """SPEC: Metrics bar is hidden by default."""
@@ -403,7 +441,7 @@ class TestScreenshot(unittest.TestCase):
         metrics = self.page.locator("#chatMetrics")
         self.assertTrue(metrics.is_hidden())
 
-        self._screenshot("07_metrics_hidden")
+        self._assert_screenshot_png(self._screenshot("07_metrics_hidden"), 1280, 720)
 
     def test_new_chat_button(self):
         """SPEC: New Chat button is present."""
@@ -413,7 +451,7 @@ class TestScreenshot(unittest.TestCase):
         self.assertTrue(new_chat_btn.is_visible())
         self.assertEqual(new_chat_btn.inner_text(), "New Chat")
 
-        self._screenshot("08_new_chat_button")
+        self._assert_screenshot_png(self._screenshot("08_new_chat_button"), 1280, 720)
 
     def test_model_buttons(self):
         """SPEC: Refresh, Load, Unload model buttons are present."""
@@ -423,7 +461,7 @@ class TestScreenshot(unittest.TestCase):
         self.assertTrue(self.page.locator("#loadModelBtn").is_visible())
         self.assertTrue(self.page.locator("#unloadModelBtn").is_visible())
 
-        self._screenshot("09_model_buttons")
+        self._assert_screenshot_png(self._screenshot("09_model_buttons"), 1280, 720)
 
     def test_toast_container(self):
         """SPEC: Toast container exists for notifications."""
@@ -433,7 +471,7 @@ class TestScreenshot(unittest.TestCase):
         toast_container = self.page.locator("#toastContainer")
         self.assertIsNotNone(toast_container)
 
-        self._screenshot("10_toast_container")
+        self._assert_screenshot_png(self._screenshot("10_toast_container"), 1280, 720)
 
     # --- Interactive behavioral tests ---
     #
@@ -480,7 +518,7 @@ class TestScreenshot(unittest.TestCase):
         )
         self.assertIn("Connection failed", toast.text_content())
 
-        self._screenshot("11_connect_button_interactive")
+        self._assert_screenshot_png(self._screenshot("11_connect_button_interactive"), 1280, 720)
 
     def test_send_message_interactive(self):
         """Interactive: Type and send a message, verify UI flow (user msg, streaming, error)."""
@@ -544,7 +582,7 @@ class TestScreenshot(unittest.TestCase):
         toast = self.page.locator(".toast.error")
         self.assertTrue(toast.is_visible(), "Error toast should be visible")
 
-        self._screenshot("12_send_message_interactive")
+        self._assert_screenshot_png(self._screenshot("12_send_message_interactive"), 1280, 720)
 
     def test_new_chat_button_interactive(self):
         """Interactive: Click New Chat, verify chat clears and session is saved."""
@@ -596,7 +634,7 @@ class TestScreenshot(unittest.TestCase):
             history_count, 0, "History should contain the saved session"
         )
 
-        self._screenshot("13_new_chat_interactive")
+        self._assert_screenshot_png(self._screenshot("13_new_chat_interactive"), 1280, 720)
 
     def test_settings_toggle_interactive(self):
         """Interactive: Click settings toggle, verify panel opens and closes."""
@@ -614,7 +652,7 @@ class TestScreenshot(unittest.TestCase):
         self.assertTrue(self.page.locator("#systemPrompt").is_visible())
         self.assertTrue(self.page.locator("#temperature").is_visible())
 
-        self._screenshot("14a_settings_open")
+        self._assert_screenshot_png(self._screenshot("14a_settings_open"), 1280, 720)
 
         # Click to close
         self.page.click("#settingsToggle")
@@ -623,7 +661,7 @@ class TestScreenshot(unittest.TestCase):
         # Verify panel is closed
         self.assertTrue(self.page.locator("#settingsPanel").is_hidden())
 
-        self._screenshot("14b_settings_closed")
+        self._assert_screenshot_png(self._screenshot("14b_settings_closed"), 1280, 720)
 
     def test_model_select_and_load_interactive(self):
         """Interactive: Select a model, click Load/Unload, verify state feedback."""
@@ -670,7 +708,7 @@ class TestScreenshot(unittest.TestCase):
         self.assertEqual(self.page.text_content("#loadModelBtn"), "Loading...")
         self.assertTrue(self.page.locator("#loadModelBtn").is_disabled())
 
-        self._screenshot("15a_model_loading")
+        self._assert_screenshot_png(self._screenshot("15a_model_loading"), 1280, 720)
 
         # Simulate model becoming loaded (backend op has 600s timeout; skip waiting)
         self._eval_with_dom(
@@ -711,7 +749,7 @@ class TestScreenshot(unittest.TestCase):
         self.assertEqual(self.page.text_content("#unloadModelBtn"), "Unloading...")
         self.assertTrue(self.page.locator("#unloadModelBtn").is_disabled())
 
-        self._screenshot("15b_model_unloading")
+        self._assert_screenshot_png(self._screenshot("15b_model_unloading"), 1280, 720)
 
         # Simulate unload completing (backend op has 600s timeout; skip waiting)
         self._eval_with_dom(
@@ -743,7 +781,7 @@ class TestScreenshot(unittest.TestCase):
             "Model should not show loaded badge after unload",
         )
 
-        self._screenshot("15c_model_unloaded")
+        self._assert_screenshot_png(self._screenshot("15c_model_unloaded"), 1280, 720)
 
     def test_copy_button_interactive(self):
         """Interactive: Click Copy button on assistant message, verify text change and revert."""
@@ -792,7 +830,7 @@ class TestScreenshot(unittest.TestCase):
         btn_class = copy_btn.get_attribute("class")
         self.assertNotIn("copied", btn_class)
 
-        self._screenshot("16_copy_button_interactive")
+        self._assert_screenshot_png(self._screenshot("16_copy_button_interactive"), 1280, 720)
 
     # --- Task 3: Desktop sidebar collapse test ---
 
@@ -837,7 +875,7 @@ class TestScreenshot(unittest.TestCase):
             f"Sidebar width should decrease when collapsed (original: {original_width}, collapsed: {collapsed_width})"
         )
 
-        self._screenshot("24a_sidebar_collapsed")
+        self._assert_screenshot_png(self._screenshot("24a_sidebar_collapsed"), 1280, 800)
 
         # Click toggle again to restore
         self.page.click("#sidebarToggle")
@@ -859,7 +897,7 @@ class TestScreenshot(unittest.TestCase):
             f"Sidebar width should return to original after restore (original: {original_width}, restored: {restored_width})"
         )
 
-        self._screenshot("24b_sidebar_restored")
+        self._assert_screenshot_png(self._screenshot("24b_sidebar_restored"), 1280, 800)
 
     def test_sidebar_collapse_mobile(self):
         """Mobile: Collapsed sidebar keeps a visible, clickable toggle.
@@ -911,7 +949,7 @@ class TestScreenshot(unittest.TestCase):
             "Toggle must be visible while collapsed on mobile"
         )
 
-        self._screenshot("28_mobile_sidebar_collapsed")
+        self._assert_screenshot_png(self._screenshot("28_mobile_sidebar_collapsed"), 352, 1063)
 
         # Re-expand via the same toggle
         self.page.click("#sidebarToggle")
@@ -924,7 +962,7 @@ class TestScreenshot(unittest.TestCase):
             "Sidebar should re-expand when the collapsed toggle is clicked"
         )
 
-        self._screenshot("29_mobile_sidebar_restored")
+        self._assert_screenshot_png(self._screenshot("29_mobile_sidebar_restored"), 352, 1063)
 
     # --- Cancellation (stop button) interactive tests ---
 
@@ -990,7 +1028,7 @@ class TestScreenshot(unittest.TestCase):
                 "The in-flight /api/chat fetch should have been aborted",
             )
 
-            self._screenshot("17_stop_button_interactive")
+            self._assert_screenshot_png(self._screenshot("17_stop_button_interactive"), 1280, 720)
         finally:
             self.page.unroute("**/api/chat")
 
@@ -1093,7 +1131,7 @@ class TestScreenshot(unittest.TestCase):
             "Tool call element should be visible with executing status"
         )
 
-        self._screenshot("25_tool_call_executing")
+        self._assert_screenshot_png(self._screenshot("25_tool_call_executing"), 1280, 800)
 
         # Now simulate tool_result event (done) — update status and show result
         self.page.evaluate("""() => {
@@ -1130,7 +1168,7 @@ class TestScreenshot(unittest.TestCase):
             "Tool result should contain the result text"
         )
 
-        self._screenshot("26_tool_call_done")
+        self._assert_screenshot_png(self._screenshot("26_tool_call_done"), 1280, 800)
 
         # Now render final assistant message content
         self.page.evaluate("""async () => {
@@ -1155,7 +1193,7 @@ class TestScreenshot(unittest.TestCase):
             "Streaming indicator should be hidden after stream completes"
         )
 
-        self._screenshot("27_tool_call_complete")
+        self._assert_screenshot_png(self._screenshot("27_tool_call_complete"), 1280, 800)
 
     def test_tool_call_sse_lifecycle(self):
         """Interactive: real chat SSE events render a tool card lifecycle.
@@ -1248,6 +1286,75 @@ class TestScreenshot(unittest.TestCase):
         self.assertTrue(self.page.locator("#streamingIndicator").is_hidden())
         self.assertEqual(self.page.locator(".tool-call").count(), 1)
 
+    def test_xss_payload_sanitized_in_assistant_render(self):
+        """Behavioral: XSS in a mock assistant reply is sanitized on render.
+
+        Mocks the /api/chat SSE stream with a content payload containing a
+        <script> tag alongside markdown bold text (the stored-XSS vector:
+        model output is rendered via marked.parse + innerHTML). Asserts the
+        script never executes, no <script> element enters the DOM, and the
+        markdown (bold) still renders correctly through sanitization.
+        """
+        self._navigate()
+        self._enable_chat_ui_for_test_model()
+
+        # Mock /api/chat with a single SSE content payload carrying an XSS
+        # payload (same in-page fetch mock pattern as
+        # test_tool_call_sse_lifecycle).
+        self.page.evaluate(
+            """async () => {
+                const stateMod = await import('/static/js/state.js');
+                stateMod.state.chatMessages = [];
+
+                const originalFetch = window.fetch;
+                const encoder = new TextEncoder();
+                const payload = { content: '**bold** <script>window.__xss=1</' + 'script>' };
+                const line = `data: ${JSON.stringify(payload)}\\n\\n`;
+                window.fetch = (url, options) => {
+                    if (url !== '/api/chat') return originalFetch(url, options);
+                    const stream = new ReadableStream({
+                        start(controller) {
+                            controller.enqueue(encoder.encode(line));
+                            controller.close();
+                        },
+                    });
+                    return Promise.resolve(new Response(stream, {
+                        status: 200,
+                        headers: { 'Content-Type': 'text/event-stream' },
+                    }));
+                };
+            }"""
+        )
+
+        self.page.fill("#chatInput", "Render an XSS payload")
+        self._click_send_btn()
+
+        # Wait for the assistant content to render (bold <strong> present)
+        self.page.wait_for_selector(
+            ".message.assistant .message-text strong", timeout=10000
+        )
+        # Wait for the stream to fully complete before asserting
+        self.page.wait_for_selector("#streamingIndicator", state="hidden", timeout=10000)
+
+        # The <script> payload must not have executed
+        self.assertIsNone(
+            self.page.evaluate("window.__xss"),
+            "<script> payload in model output must not execute",
+        )
+
+        # No <script> element may exist anywhere in the chat DOM
+        self.assertIsNone(
+            self.page.evaluate("document.querySelector('#chatMessages script')"),
+            "<script> element must not be inserted into the chat DOM",
+        )
+
+        # Markdown must still render: the bold text is a real <strong> element
+        strong = self.page.locator(".message.assistant .message-text strong")
+        self.assertEqual(strong.count(), 1)
+        self.assertEqual(strong.text_content(), "bold")
+
+        self._assert_screenshot_png(self._screenshot("30_xss_sanitized"), 1280, 720)
+
     # --- Theme tests ---
 
     def test_theme_selector_visible(self):
@@ -1277,7 +1384,7 @@ class TestScreenshot(unittest.TestCase):
             "document.getElementById('themeSelect').value")
         self.assertEqual(default_value, "cyberpunk")
 
-        self._screenshot("19_theme_selector_visible")
+        self._assert_screenshot_png(self._screenshot("19_theme_selector_visible"), 1280, 720)
 
     def test_toggle_theme_light(self):
         """Switch to Light Professional theme, verify CSS variables changed."""
@@ -1336,7 +1443,7 @@ class TestScreenshot(unittest.TestCase):
         settings = json.loads(saved)
         self.assertEqual(settings["theme"], "light")
 
-        self._screenshot("20_toggle_theme_light")
+        self._assert_screenshot_png(self._screenshot("20_toggle_theme_light"), 1280, 720)
 
     def test_toggle_theme_warm(self):
         """Switch to Warm Minimal theme, verify CSS variables changed."""
@@ -1411,7 +1518,7 @@ class TestScreenshot(unittest.TestCase):
         settings = json.loads(saved)
         self.assertEqual(settings["theme"], "warm")
 
-        self._screenshot("21_toggle_theme_warm")
+        self._assert_screenshot_png(self._screenshot("21_toggle_theme_warm"), 1280, 720)
 
     def test_theme_persistence(self):
         """Switch theme, reload page, verify theme persists via localStorage."""
@@ -1444,7 +1551,7 @@ class TestScreenshot(unittest.TestCase):
         bg_base = self.page.evaluate("getComputedStyle(document.body).getPropertyValue('--bg-base')")
         self.assertIn("#FAFAF8", bg_base, "Light theme background should persist")
 
-        self._screenshot("22_theme_persistence")
+        self._assert_screenshot_png(self._screenshot("22_theme_persistence"), 1280, 720)
 
     def test_trace_log_panel(self):
         """Open trace log panel, verify it renders and is collapsible."""
@@ -1510,7 +1617,7 @@ class TestScreenshot(unittest.TestCase):
             f"Trace controls button font-size must be >= 9px for readability (got {btn_font})"
         )
 
-        self._screenshot("23a_trace_panel_open")
+        self._assert_screenshot_png(self._screenshot("23a_trace_panel_open"), 1280, 720)
 
         # Close trace log panel
         self.page.click("#traceToggle")
@@ -1519,7 +1626,7 @@ class TestScreenshot(unittest.TestCase):
         # Verify panel is closed
         self.assertTrue(self.page.locator("#tracePanel").is_hidden(), "Trace panel should be closed after toggle")
 
-        self._screenshot("23b_trace_panel_closed")
+        self._assert_screenshot_png(self._screenshot("23b_trace_panel_closed"), 1280, 720)
 
     def test_trace_entries_keep_readable_size(self):
         """Trace log: Entries keep a fixed, readable height when the log
@@ -1578,7 +1685,7 @@ class TestScreenshot(unittest.TestCase):
             "An overflowing trace log should scroll rather than squash entries"
         )
 
-        self._screenshot("30_trace_entries_overflow")
+        self._assert_screenshot_png(self._screenshot("30_trace_entries_overflow"), 1280, 720)
 
     # --- Cancellation (stop button) interactive tests ---
 
@@ -1631,9 +1738,120 @@ class TestScreenshot(unittest.TestCase):
                 ".toast.info:has-text('Chat cleared')", timeout=10000
             )
 
-            self._screenshot("18_new_chat_cancels_request")
+            self._assert_screenshot_png(self._screenshot("18_new_chat_cancels_request"), 1280, 720)
         finally:
             self.page.unroute("**/api/chat")
+
+
+    # --- Task 13: pixel-level PNG verification + live resize (Issues 19, 20) ---
+
+    def test_screenshot_differs_across_themes(self):
+        """Differential pixel check: different UI states produce different PNGs.
+
+        Screenshots the default (cyberpunk) theme, then switches to the
+        light theme via the settings themeSelect (the existing
+        theme-test pattern). Both screenshots must be valid PNGs of the
+        exact viewport size, and their SHA-256 digests must differ — a
+        blank or frozen render pipeline would produce identical byte
+        streams regardless of UI state.
+        """
+        self._navigate()
+
+        # State 1: default cyberpunk theme
+        cyberpunk_path = self._screenshot("31_diff_theme_cyberpunk")
+        self._assert_screenshot_png(cyberpunk_path, 1280, 720)
+        cyberpunk_sha = self._png_sha256(cyberpunk_path)
+
+        # State 2: light theme (same pattern as test_toggle_theme_light)
+        self.page.click("#settingsToggle")
+        self.page.wait_for_selector("#settingsPanel.open", timeout=5000)
+        self.page.select_option("#themeSelect", "light")
+        self.page.wait_for_timeout(500)
+        self.assertIn(
+            "theme-light.css",
+            self.page.evaluate("document.getElementById('theme-stylesheet').href"),
+            "Theme must actually switch before the differential screenshot",
+        )
+
+        light_path = self._screenshot("31_diff_theme_light")
+        self._assert_screenshot_png(light_path, 1280, 720)
+        light_sha = self._png_sha256(light_path)
+
+        self.assertNotEqual(
+            cyberpunk_sha, light_sha,
+            "Screenshots of different themes must differ; identical digests "
+            "indicate a blank/frozen render pipeline",
+        )
+
+    def test_live_resize_desktop_tablet_mobile(self):
+        """SPEC: resize the application window live and validate the UI reflows.
+
+        Navigates at the default 1280x720 viewport, then resizes AFTER page
+        load to tablet portrait (820x1180 — above the 768px breakpoint, so
+        desktop layout applies) and to mobile (352x1063 — below the
+        breakpoint). At each stage the layout must reflow without
+        horizontal overflow and the screenshot must be a valid PNG of the
+        exact viewport size.
+        """
+        self._navigate()  # default viewport 1280x720
+
+        # Stage 1: desktop (default 1280x720)
+        self.assertTrue(
+            self.page.locator("#sendBtn").is_visible(),
+            "Send button must be visible at desktop size",
+        )
+        self.assertTrue(
+            self.page.locator("#statusDot").is_visible(),
+            "Status dot must be visible at desktop size",
+        )
+        self.assertTrue(
+            self.page.evaluate(
+                "() => document.documentElement.scrollWidth <= window.innerWidth"
+            ),
+            "Desktop layout must not overflow horizontally",
+        )
+        self._assert_screenshot_png(
+            self._screenshot("32_resize_desktop"), 1280, 720
+        )
+
+        # Stage 2: tablet portrait (820x1180) — above the 768px breakpoint
+        self.page.set_viewport_size({"width": 820, "height": 1180})
+        self.page.wait_for_timeout(300)
+        self.assertTrue(
+            self.page.locator("#chatInput").is_visible(),
+            "Chat input must stay visible at tablet width",
+        )
+        self.assertTrue(
+            self.page.evaluate(
+                "() => document.documentElement.scrollWidth <= window.innerWidth"
+            ),
+            "Tablet layout must not overflow horizontally",
+        )
+        self._assert_screenshot_png(
+            self._screenshot("32_resize_tablet"), 820, 1180
+        )
+
+        # Stage 3: mobile (352x1063) — below the 768px breakpoint
+        self.page.set_viewport_size({"width": 352, "height": 1063})
+        self.page.wait_for_timeout(300)
+        self.assertTrue(
+            self.page.locator("#sidebarToggle").is_visible(),
+            "Mobile layout must keep the sidebar toggle present "
+            "(same indicator as test_sidebar_collapse_mobile)",
+        )
+        self.assertTrue(
+            self.page.locator("#chatInput").is_visible(),
+            "Chat input must remain usable on mobile",
+        )
+        self.assertTrue(
+            self.page.evaluate(
+                "() => document.documentElement.scrollWidth <= window.innerWidth"
+            ),
+            "Mobile layout must not overflow horizontally",
+        )
+        self._assert_screenshot_png(
+            self._screenshot("32_resize_mobile"), 352, 1063
+        )
 
 
 if __name__ == "__main__":

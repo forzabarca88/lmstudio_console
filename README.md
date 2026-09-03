@@ -80,9 +80,10 @@ The app runs as a non-root user; configure ports/URLs via the same environment v
 │   ├── logger.py      # Trace logging with shared logger, RequestTrace context, cancellation tracking, and SSE streamer integration
 │   ├── log_streamer.py # SSE broadcaster for trace log entries (ring buffer, subscriber broadcast)
 │   ├── proxy.py       # HTTP proxy using httpx for forwarding requests to LM Studio/OpenAI endpoints with streaming and graceful cancellation support
-│   ├── server.py      # FastAPI app with proxy routes, chat endpoint (client disconnect detection, cooperative cancellation), tool endpoints, file upload, trace log SSE, and CORS middleware
+│   ├── server.py      # FastAPI app with proxy routes, chat endpoint (client disconnect detection, cooperative cancellation), file upload (50MB cap), trace log SSE, CORS middleware, SSRF-safe X-LM-Studio-URL handling, and graceful shutdown (5s force-exit)
 │   ├── agent.py       # Pydantic AI Agent wrapper for chat with automatic tool call handling (Pydantic AI internal tool loop), SSE tool_call/tool_result events, thinking tokens, message format conversion, and cooperative cancellation support
-│   └── tools.py       # Pydantic AI tool definitions (web_search, open_web_page, run_python_code) with OpenAI-compatible schema generation
+│   ├── tools.py       # Pydantic AI tool definitions (web_search, open_web_page, run_python_code): run_python_code in a disposable isolated subprocess, web_search off the event loop, open_web_page via SSRF-validated streaming fetch with a size cap
+│   └── url_security.py # SSRF-safe URL validation for the client-supplied proxy target (LAN ranges allowed) and outbound tool fetches (global-only), with metadata-hostname block and DNS resolution checks
 ├── static/
 │   ├── css/
 │   │   ├── base.css         # Structural/layout CSS (theme-agnostic): desktop sidebar collapse, readable trace log fonts
@@ -99,6 +100,7 @@ The app runs as a non-root user; configure ports/URLs via the same environment v
 │   │   ├── state.js   # State & localStorage
 │   │   ├── trace.js   # SSE client for live trace log streaming
 │   │   └── ui.js      # UI utilities + metrics display
+│   ├── vendor/        # Pinned vendored frontend libraries (marked 15.0.7, DOMPurify 3.2.4) served at /static/vendor/ so markdown + sanitization work offline
 │   └── index.html     # Page structure with collapsible sidebar (chevron tab on desktop, toggle on mobile)
 ├── tests/
 │   ├── __init__.py
@@ -108,15 +110,14 @@ The app runs as a non-root user; configure ports/URLs via the same environment v
 │   ├── test_js_syntax.py
 │   ├── test_js_runtime.js
 │   ├── test_screenshot.py  # Playwright UI screenshot validation
-│   └── test_tools.py
+│   ├── test_tools.py
+│   └── test_url_security.py
 ├── .dockerignore      # Build context exclusions for the Docker image
-├── .pytest_cache/
-│   └── README.md      # pytest cache directory marker
 ├── Dockerfile         # Minimal production Docker image (Python 3.12 + uv, non-root user)
 ├── pyproject.toml     # Python project configuration with dependencies
 ├── package.json       # Node.js project configuration for frontend dependencies
 ├── package-lock.json  # Node.js dependency lock file
-├── run.py             # Entry point with graceful shutdown
+├── run.py             # Entry point; delegates to backend.server.run (Ctrl+C graceful shutdown with 5s force-exit)
 └── README.md
 ```
 

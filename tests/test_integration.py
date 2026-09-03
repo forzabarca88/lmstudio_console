@@ -23,6 +23,11 @@ import json
 import io
 import base64
 import asyncio
+import signal
+import socket
+import subprocess
+import threading
+import time
 from unittest.mock import patch, MagicMock, AsyncMock, AsyncMock as AsyncMockType
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
@@ -174,6 +179,30 @@ class TestConnectAndListModels(unittest.TestCase):
         self.assertEqual(resp.status_code, 502)
         self.assertIn("error", resp.json())
 
+    @patch("backend.server.proxy_request")
+    def test_valid_lan_header_used(self, mock_proxy):
+        """ARRANGE: OpenAI-compatible endpoint; client supplies a LAN URL header
+        ACT: GET /proxy/v1/models with X-LM-Studio-URL: http://192.168.0.5:1234
+        ASSERT: 200 and the header URL is used as the proxy target"""
+        mock_proxy.return_value = _openai_models()
+        resp = self.client.get("/proxy/v1/models",
+                               headers={"X-LM-Studio-URL": "http://192.168.0.5:1234"})
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(mock_proxy.call_args.kwargs["target_url"],
+                         "http://192.168.0.5:1234")
+
+    @patch("backend.server.proxy_request")
+    def test_invalid_header_falls_back(self, mock_proxy):
+        """ARRANGE: OpenAI-compatible endpoint; client supplies a blocked loopback URL header
+        ACT: GET /proxy/v1/models with X-LM-Studio-URL: http://127.0.0.1:9999
+        ASSERT: 200 and the configured fallback URL is used"""
+        mock_proxy.return_value = _openai_models()
+        resp = self.client.get("/proxy/v1/models",
+                               headers={"X-LM-Studio-URL": "http://127.0.0.1:9999"})
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(mock_proxy.call_args.kwargs["target_url"],
+                         os.getenv("LM_STUDIO_URL", "http://localhost:1234"))
+
 
 class TestModelLoadUnload(unittest.TestCase):
     """SPEC: Load and unload models."""
@@ -289,6 +318,22 @@ class TestChatProxy(unittest.TestCase):
         self.assertEqual(data["usage"]["total_tokens"], 18)
         self.assertEqual(data["usage"]["prompt_tokens"], 10)
         self.assertEqual(data["usage"]["completion_tokens"], 8)
+
+    @patch("backend.server.proxy_stream_iter")
+    @patch("backend.server.proxy_request")
+    @patch("backend.server._MAX_PROXY_BODY", 1024)
+    def test_proxy_body_too_large(self, mock_proxy, mock_stream):
+        """ARRANGE: proxy body cap patched to 1 KiB
+        ACT: POST /proxy/v1/chat/completions with a 4 KiB body
+        ASSERT: 413 with error JSON and no upstream call"""
+        body = b"x" * 4096
+        resp = self.client.post("/proxy/v1/chat/completions",
+                                 content=body,
+                                 headers={"Content-Type": "application/json"})
+        self.assertEqual(resp.status_code, 413)
+        self.assertIn("Request body too large", resp.json()["error"])
+        mock_proxy.assert_not_called()
+        mock_stream.assert_not_called()
 
     @patch("backend.server.proxy_stream_iter")
     def test_streaming_chat(self, mock_stream):
@@ -477,101 +522,27 @@ class TestChatEndpoint(unittest.TestCase):
 
 
 class TestTools(unittest.TestCase):
-    """SPEC: Toggle web search tool calls."""
+    """SPEC: Private tool HTTP endpoints removed (tools are internal to the chat agent)."""
 
     def setUp(self):
         self.client = TestClient(server.app)
 
-    def test_list_tools(self):
+    def test_tools_endpoint_removed(self):
         """ARRANGE: Server running
         ACT: GET /api/tools
-        ASSERT: Tool schemas returned in OpenAI format"""
+        ASSERT: 404 — endpoint no longer exists"""
         resp = self.client.get("/api/tools")
-        self.assertEqual(resp.status_code, 200)
-        data = resp.json()
-        self.assertIsInstance(data, list)
-        tool_names = [t["function"]["name"] for t in data]
-        self.assertIn("web_search", tool_names)
-        self.assertIn("open_web_page", tool_names)
-        ws = next(t for t in data if t["function"]["name"] == "web_search")
-        self.assertEqual(ws["type"], "function")
-        self.assertIn("parameters", ws["function"])
-        owp = next(t for t in data if t["function"]["name"] == "open_web_page")
-        self.assertEqual(owp["type"], "function")
-        self.assertIn("url", owp["function"]["parameters"]["properties"])
+        self.assertEqual(resp.status_code, 404)
 
-    def test_execute_tool(self):
-        """ARRANGE: web_search tool available
-        ACT: POST /api/tool-exec with query
-        ASSERT: Search results returned"""
+    def test_tool_exec_endpoint_removed(self):
+        """ARRANGE: Server running
+        ACT: POST /api/tool-exec
+        ASSERT: 404 — endpoint no longer exists"""
         resp = self.client.post("/api/tool-exec", json={
             "name": "web_search",
-            "arguments": {"query": "Python"},
+            "arguments": {"query": "x"},
         })
-        self.assertEqual(resp.status_code, 200)
-        data = resp.json()
-        self.assertIn("result", data)
-        self.assertIsInstance(data["result"], str)
-        self.assertGreater(len(data["result"]), 0)
-
-    def test_execute_open_web_page(self):
-        """ARRANGE: open_web_page tool available
-        ACT: POST /api/tool-exec with URL
-        ASSERT: Page content returned or error handled"""
-        resp = self.client.post("/api/tool-exec", json={
-            "name": "open_web_page",
-            "arguments": {"url": "http://example.com"},
-        })
-        self.assertEqual(resp.status_code, 200)
-        data = resp.json()
-        self.assertIn("result", data)
-        self.assertIsInstance(data["result"], str)
-
-    def test_execute_unknown_tool(self):
-        """ARRANGE: Unknown tool name
-        ACT: POST /api/tool-exec
-        ASSERT: 400 error"""
-        resp = self.client.post("/api/tool-exec", json={
-            "name": "nonexistent_tool",
-            "arguments": {},
-        })
-        self.assertEqual(resp.status_code, 400)
-        self.assertIn("error", resp.json())
-
-    def test_execute_run_python_code(self):
-        """ARRANGE: run_python_code tool available
-        ACT: POST /api/tool-exec with code
-        ASSERT: Output returned"""
-        resp = self.client.post("/api/tool-exec", json={
-            "name": "run_python_code",
-            "arguments": {"code": "print('hello')"},
-        })
-        self.assertEqual(resp.status_code, 200)
-        data = resp.json()
-        self.assertIn("result", data)
-        self.assertIn("hello", data["result"])
-
-    def test_execute_run_python_code_blocked(self):
-        """ARRANGE: Code with blocked operation
-        ACT: POST /api/tool-exec with import
-        ASSERT: Blocked error returned"""
-        resp = self.client.post("/api/tool-exec", json={
-            "name": "run_python_code",
-            "arguments": {"code": "import os"},
-        })
-        self.assertEqual(resp.status_code, 200)
-        data = resp.json()
-        self.assertIn("Blocked operation", data["result"])
-
-    def test_list_tools_includes_run_python_code(self):
-        """ARRANGE: Server running
-        ACT: GET /api/tools
-        ASSERT: run_python_code included in tool list"""
-        resp = self.client.get("/api/tools")
-        self.assertEqual(resp.status_code, 200)
-        data = resp.json()
-        tool_names = [t["function"]["name"] for t in data]
-        self.assertIn("run_python_code", tool_names)
+        self.assertEqual(resp.status_code, 404)
 
 
 class TestFileUpload(unittest.TestCase):
@@ -595,6 +566,17 @@ class TestFileUpload(unittest.TestCase):
         decoded = base64.b64decode(data["base64"])
         self.assertEqual(decoded, b"test file content")
 
+    def test_upload_too_large(self):
+        """ARRANGE: File exceeding the 50 MB server-side cap
+        ACT: POST /api/upload
+        ASSERT: 413 with 'File too large' error"""
+        size = 50 * 1024 * 1024 + 1
+        file_data = io.BytesIO(b"\x00" * size)
+        resp = self.client.post("/api/upload",
+                                 files={"file": ("big.bin", file_data, "application/octet-stream")})
+        self.assertEqual(resp.status_code, 413)
+        self.assertIn("File too large", resp.json()["error"])
+
     def test_upload_image(self):
         """ARRANGE: Image file
         ACT: POST /api/upload
@@ -614,6 +596,18 @@ class TestFileUpload(unittest.TestCase):
                                  files={"file": ("test.png", png_data, "image/png")})
         self.assertEqual(resp.status_code, 200)
         self.assertTrue(resp.json()["isImage"])
+
+    def test_upload_content_length_reject(self):
+        """ARRANGE: Content-Length > 2x a small patched cap
+        ACT: POST /api/upload
+        ASSERT: 413 early reject (before multipart form processing)"""
+        with patch("backend.server._MAX_UPLOAD_SIZE", 1024):
+            body = b"x" * 4096  # > 2 * 1024
+            resp = self.client.post("/api/upload",
+                                     content=body,
+                                     headers={"Content-Type": "application/octet-stream"})
+        self.assertEqual(resp.status_code, 413)
+        self.assertIn("File too large", resp.json()["error"])
 
     def test_upload_no_file(self):
         """ARRANGE: No file provided
@@ -650,9 +644,9 @@ class TestCORS(unittest.TestCase):
 
     def test_cors_on_api(self):
         """ARRANGE: Cross-origin request to API
-        ACT: GET /api/tools
+        ACT: GET /
         ASSERT: CORS headers present"""
-        resp = self.client.get("/api/tools",
+        resp = self.client.get("/",
                                 headers={"Origin": "http://example.com"})
         self.assertEqual(resp.headers.get("access-control-allow-origin"), "*")
 
@@ -1185,6 +1179,184 @@ class TestTraceLogSSE(unittest.TestCase):
             self.assertIn("timestamp", parsed)
 
         log_streamer._buffer.clear()
+
+
+class TestGracefulShutdown(unittest.TestCase):
+    """SPEC: CTRL+C must kill all connections and stop the server,
+    force-stopping after 5 seconds.
+
+    Runs the real server in a subprocess (same pattern as
+    test_screenshot.py) and sends SIGINT:
+      * with an open SSE stream, the graceful drain is blocked, so the
+        5 second force-exit timer must terminate the process with status 1;
+      * with no open streams, the process exits quickly with status 1.
+    """
+
+    # Server must answer /api/health within this budget after spawn.
+    READY_TIMEOUT = 15.0
+    # proc.wait budget after SIGINT (force timer is 5 s; generous margin).
+    WAIT_TIMEOUT = 8.0
+    # 5 s force timer + margin for signal delivery and process teardown.
+    FORCE_EXIT_MAX_ELAPSED = 6.5
+    # No active connections: graceful drain must finish quickly.
+    CLEAN_EXIT_MAX_ELAPSED = 3.0
+
+    @classmethod
+    def _venv_python(cls):
+        """Locate the virtualenv interpreter (mirrors test_screenshot.py)."""
+        venv_python = os.path.join(
+            os.path.dirname(os.path.dirname(__file__)), ".venv", "bin", "python"
+        )
+        return venv_python if os.path.exists(venv_python) else sys.executable
+
+    @staticmethod
+    def _free_port():
+        """Ask the OS for a free TCP port on 127.0.0.1."""
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.bind(("127.0.0.1", 0))
+        port = sock.getsockname()[1]
+        sock.close()
+        return port
+
+    def _start_server(self, port):
+        """Start run.py in a subprocess bound to 127.0.0.1:<port>."""
+        env = os.environ.copy()
+        env["LM_CONSOLE_HOST"] = "127.0.0.1"
+        env["LM_CONSOLE_PORT"] = str(port)
+        return subprocess.Popen(
+            [self._venv_python(), "run.py"],
+            cwd=os.path.dirname(os.path.dirname(__file__)),
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+        )
+
+    def _wait_for_ready(self, proc, port):
+        """Poll GET /api/health until 200 or the readiness budget runs out."""
+        url = f"http://127.0.0.1:{port}/api/health"
+        deadline = time.monotonic() + self.READY_TIMEOUT
+        client = httpx.Client(timeout=2.0)
+        try:
+            while time.monotonic() < deadline:
+                if proc.poll() is not None:
+                    output = proc.stdout.read().decode(errors="replace")
+                    self.fail(
+                        f"Server exited before becoming ready "
+                        f"(code {proc.returncode}): {output}"
+                    )
+                try:
+                    if client.get(url).status_code == 200:
+                        return
+                except httpx.HTTPError:
+                    pass  # not listening yet
+                time.sleep(0.25)
+        finally:
+            client.close()
+        self.fail(f"Server did not become ready within {self.READY_TIMEOUT:.0f}s")
+
+    def _cleanup_process(self, proc):
+        """Safety net: never leave a server process behind."""
+        try:
+            if proc.poll() is None:
+                proc.kill()
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            pass
+        finally:
+            try:
+                proc.stdout.close()
+            except Exception:
+                pass
+
+    def test_sigint_clean_exit_without_streams(self):
+        """ARRANGE: Server running, no open connections
+        ACT: Send SIGINT
+        ASSERT: Process exits quickly with status 1"""
+        port = self._free_port()
+        proc = self._start_server(port)
+        try:
+            self._wait_for_ready(proc, port)
+            started = time.monotonic()
+            proc.send_signal(signal.SIGINT)
+            returncode = proc.wait(timeout=self.WAIT_TIMEOUT)
+            elapsed = time.monotonic() - started
+            self.assertEqual(returncode, 1)
+            self.assertLess(elapsed, self.CLEAN_EXIT_MAX_ELAPSED,
+                            f"clean drain took {elapsed:.1f}s")
+        except subprocess.TimeoutExpired:
+            self.fail(f"server did not exit within {self.WAIT_TIMEOUT:.0f}s of SIGINT")
+        finally:
+            self._cleanup_process(proc)
+
+    def test_sigint_with_open_stream_force_exits(self):
+        """ARRANGE: Server running with a long-lived SSE connection open
+        ACT: Send SIGINT (the open stream blocks the graceful drain)
+        ASSERT: The 5s force-exit timer terminates the process with status 1
+                in < 6.5s (the drain alone would hang indefinitely)"""
+        port = self._free_port()
+        proc = self._start_server(port)
+        stop_event = threading.Event()
+        stream_state = {
+            "client": None, "resp": None,
+            "ready": threading.Event(), "error": None,
+        }
+
+        def open_stream():
+            """Open GET /api/trace-logs and hold the SSE connection open."""
+            try:
+                client = httpx.Client(timeout=httpx.Timeout(10.0, read=None))
+                stream_state["client"] = client
+                resp = client.stream("GET", f"http://127.0.0.1:{port}/api/trace-logs")
+                stream_state["resp"] = resp
+                # Headers received: the response is streaming, the server-side
+                # generator is running, and the connection counts as active.
+                resp.__enter__()
+                stream_state["ready"].set()
+                stop_event.wait()  # hold the connection open until told to stop
+            except BaseException as e:
+                stream_state["error"] = e
+                stream_state["ready"].set()
+
+        stream_thread = threading.Thread(target=open_stream, daemon=True)
+        try:
+            self._wait_for_ready(proc, port)
+            stream_thread.start()
+            self.assertTrue(
+                stream_state["ready"].wait(10),
+                "SSE stream thread did not report ready",
+            )
+            self.assertIsNone(stream_state["error"],
+                              f"failed to open SSE stream: {stream_state['error']!r}")
+            time.sleep(0.5)  # let the server-side stream settle
+            started = time.monotonic()
+            proc.send_signal(signal.SIGINT)
+            returncode = proc.wait(timeout=self.WAIT_TIMEOUT)
+            elapsed = time.monotonic() - started
+            self.assertEqual(returncode, 1)
+            self.assertLess(elapsed, self.FORCE_EXIT_MAX_ELAPSED,
+                            f"force-exit took {elapsed:.1f}s (5s timer broken?)")
+        except subprocess.TimeoutExpired:
+            self.fail(
+                f"server did not exit within {self.WAIT_TIMEOUT:.0f}s of SIGINT: "
+                "open SSE stream blocked the drain and the 5s force timer did not fire"
+            )
+        finally:
+            stop_event.set()
+            resp = stream_state.get("resp")
+            if resp is not None:
+                try:
+                    resp.__exit__(None, None, None)
+                except Exception:
+                    pass
+            client = stream_state.get("client")
+            if client is not None:
+                try:
+                    client.close()
+                except Exception:
+                    pass
+            if stream_thread.is_alive():
+                stream_thread.join(timeout=3)
+            self._cleanup_process(proc)
 
 
 if __name__ == "__main__":

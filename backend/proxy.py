@@ -106,6 +106,15 @@ async def proxy_request(
         raise
 
 
+# Idle timeout for proxied upstream *streams*: bounds how long we wait for
+# the next chunk from upstream while streaming a response. Without it, a
+# stalled upstream (headers sent, body never arriving) would hang the client
+# indefinitely, since `client.stream(..., timeout=None)` bypasses the client
+# default. 120s is the idle (read) timeout between chunks; connect stays at
+# the client's usual 10s.
+_STREAM_READ_TIMEOUT = httpx.Timeout(120.0, connect=10.0)
+
+
 async def proxy_stream_iter(
     method: str,
     path: str,
@@ -116,6 +125,11 @@ async def proxy_stream_iter(
     """Stream a response from the target API server.
 
     Yields raw bytes as they arrive from the upstream server.
+
+    The stream is bounded by _STREAM_READ_TIMEOUT (120s idle between
+    chunks): a stalled upstream raises httpx.TimeoutException instead of
+    hanging the client forever. The exception is re-raised so the SSE
+    consumer (backend/server.py) can surface it as an error data: line.
 
     Args:
         method: HTTP method.
@@ -129,7 +143,8 @@ async def proxy_stream_iter(
 
     Raises:
         httpx.ConnectError: If the target server is unreachable.
-        httpx.TimeoutException: If the connection times out.
+        httpx.TimeoutException: If the connection times out, or the upstream
+            stream idles past _STREAM_READ_TIMEOUT between chunks.
         httpx.HTTPStatusError: If the target returns an error status.
     """
     base_url = target_url or get_lm_studio_url()
@@ -147,7 +162,12 @@ async def proxy_stream_iter(
 
     client = get_client()
     try:
-        async with client.stream(method, url, content=request_body, headers=request_headers, timeout=None) as response:
+        async with client.stream(
+            method, url,
+            content=request_body,
+            headers=request_headers,
+            timeout=_STREAM_READ_TIMEOUT,
+        ) as response:
             duration = time.monotonic() - start_time
             content_type = response.headers.get("Content-Type", "")
 

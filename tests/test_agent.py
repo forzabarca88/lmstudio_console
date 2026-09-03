@@ -12,7 +12,9 @@ import unittest
 import os
 import sys
 import json
+import base64
 import asyncio
+import contextlib
 from unittest.mock import patch, AsyncMock, MagicMock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
@@ -38,6 +40,9 @@ from pydantic_ai.messages import (
     ThinkingPart,
     ThinkingPartDelta,
     ImageUrl,
+    AudioUrl,
+    DocumentUrl,
+    SystemPromptPart,
     ToolCallPart,
     ToolReturnPart,
 )
@@ -165,6 +170,62 @@ class TestUserContentConversion(unittest.TestCase):
         self.assertEqual(result[0].content, "Describe this")
         self.assertIsInstance(result[1], ImageUrl)
         self.assertEqual(result[1].url, "http://example.com/img.png")
+
+    def test_input_audio_wav_to_audio_url(self):
+        data_uri = "data:audio/wav;base64,UklGRiQAAABXRUJQVlA4TlNFQIA="
+        result = _convert_user_content(
+            [{"type": "input_audio", "file_data": data_uri}]
+        )
+        self.assertEqual(len(result), 1)
+        self.assertIsInstance(result[0], AudioUrl)
+        self.assertEqual(result[0].url, data_uri)
+        self.assertEqual(result[0].media_type, "audio/wav")
+
+    def test_input_audio_mpeg_to_audio_url(self):
+        data_uri = "data:audio/mpeg;base64,//uQx"
+        result = _convert_user_content(
+            [{"type": "input_audio", "file_data": data_uri}]
+        )
+        self.assertEqual(len(result), 1)
+        self.assertIsInstance(result[0], AudioUrl)
+        self.assertEqual(result[0].url, data_uri)
+        self.assertEqual(result[0].media_type, "audio/mpeg")
+
+    def test_input_audio_unsupported_format_is_placeholder(self):
+        result = _convert_user_content(
+            [{"type": "input_audio", "file_data": "data:audio/ogg;base64,AAAA"}]
+        )
+        self.assertEqual(len(result), 1)
+        self.assertIsInstance(result[0], TextContent)
+        self.assertIn("not supported", result[0].content)
+        self.assertIn("audio/ogg", result[0].content)
+
+    def test_input_file_text_plain_decoded_to_text(self):
+        payload = base64.b64encode("Hello, file content!".encode("utf-8")).decode("ascii")
+        result = _convert_user_content(
+            [{"type": "input_file", "file_data": f"data:text/plain;base64,{payload}"}]
+        )
+        self.assertEqual(len(result), 1)
+        self.assertIsInstance(result[0], TextContent)
+        self.assertEqual(result[0].content, "Hello, file content!")
+
+    def test_input_file_pdf_to_document_url(self):
+        data_uri = "data:application/pdf;base64,JVBERi0xLjQ="
+        result = _convert_user_content(
+            [{"type": "input_file", "file_data": data_uri}]
+        )
+        self.assertEqual(len(result), 1)
+        self.assertIsInstance(result[0], DocumentUrl)
+        self.assertEqual(result[0].url, data_uri)
+        self.assertEqual(result[0].media_type, "application/pdf")
+
+    def test_input_file_unsupported_format_is_placeholder(self):
+        result = _convert_user_content(
+            [{"type": "input_file", "file_data": "data:application/zip;base64,UEsDB"}]
+        )
+        self.assertEqual(len(result), 1)
+        self.assertIsInstance(result[0], TextContent)
+        self.assertIn("not supported", result[0].content)
 
 
 class TestChatAgentStreaming(unittest.TestCase):
@@ -566,6 +627,126 @@ class TestChatAgentStreaming(unittest.TestCase):
             # break, which is what cancels the background agent task and its
             # upstream HTTP connection.
             mock_cm.__aexit__.assert_called_once()
+
+        asyncio.run(_run())
+
+    def test_chat_cancels_during_silence(self):
+        """ARRANGE: ChatAgent with a mocked stream that yields one TextPart
+        start, then blocks forever (a silent upstream that never yields again);
+        a background task sets cancel_event after ~50ms
+        ACT: Consume the stream under a 5s wait_for budget
+        ASSERT: Cancellation is prompt (pre-fix this hangs until the 5s
+        timeout): exactly the first content payload followed by the
+        __cancelled__ marker, and the stream context's __aexit__ was awaited
+        once."""
+        agent = ChatAgent("http://localhost:1234")
+
+        async def _run():
+            collected = []
+            cancel_event = asyncio.Event()
+
+            with patch("backend.agent.Agent") as mock_cls:
+                mock_agent = MagicMock()
+
+                async def mock_events():
+                    yield PartStartEvent(index=0, part=TextPart(content="a"))
+                    # Upstream goes silent: block forever, never yield again.
+                    await asyncio.Event().wait()
+
+                mock_cm = MagicMock()
+                mock_cm.__aenter__ = AsyncMock(return_value=mock_events())
+                mock_cm.__aexit__ = AsyncMock(return_value=False)
+                mock_agent.run_stream_events = MagicMock(return_value=mock_cm)
+                mock_cls.return_value = mock_agent
+
+                async def consume():
+                    async for payload in agent.chat(
+                        model="test-model",
+                        messages=[{"role": "user", "content": "Hi"}],
+                        tool_call_enabled=False,
+                        cancel_event=cancel_event,
+                    ):
+                        collected.append(payload)
+
+                async def cancel_soon():
+                    await asyncio.sleep(0.05)
+                    cancel_event.set()
+
+                cancel_task = asyncio.create_task(cancel_soon())
+                try:
+                    await asyncio.wait_for(consume(), timeout=5)
+                finally:
+                    cancel_task.cancel()
+                    with contextlib.suppress(asyncio.CancelledError):
+                        await cancel_task
+
+                self.assertEqual(
+                    collected,
+                    [{"content": "a"}, {"__cancelled__": True}],
+                )
+
+                # The event stream context's __aexit__ was triggered by the
+                # break, which is what cancels the background agent task and
+                # its upstream HTTP connection.
+                mock_cm.__aexit__.assert_called_once()
+
+        asyncio.run(_run())
+
+    def test_system_prompt_not_duplicated(self):
+        """ARRANGE: Client sends the same system prompt both as the
+        system_prompt field and as a system message in messages
+        ACT: Run chat with both
+        ASSERT: The captured message_history has exactly one leading
+        ModelRequest with a single SystemPromptPart whose content is the
+        prompt exactly once (not repeated)"""
+        agent = ChatAgent("http://localhost:1234")
+
+        async def _run():
+            with patch("backend.agent.Agent") as mock_cls:
+                mock_agent = MagicMock()
+                mock_result = MagicMock()
+                mock_result.usage = MagicMock(
+                    input_tokens=5, output_tokens=3, total_tokens=8
+                )
+
+                async def mock_events():
+                    yield PartStartEvent(index=0, part=TextPart(content="Hi"))
+                    yield AgentRunResultEvent(result=mock_result)
+
+                mock_cm = MagicMock()
+                mock_cm.__aenter__ = AsyncMock(return_value=mock_events())
+                mock_cm.__aexit__ = AsyncMock(return_value=False)
+                mock_agent.run_stream_events = MagicMock(return_value=mock_cm)
+                mock_cls.return_value = mock_agent
+
+                async for _ in agent.chat(
+                    model="test-model",
+                    messages=[
+                        {"role": "system", "content": "You are helpful."},
+                        {"role": "user", "content": "Hi"},
+                    ],
+                    system_prompt="You are helpful.",
+                    tool_call_enabled=False,
+                ):
+                    pass
+
+                history = mock_agent.run_stream_events.call_args.kwargs["message_history"]
+                # Exactly one leading ModelRequest carrying the system prompt.
+                self.assertIsInstance(history[0], ModelRequest)
+                self.assertEqual(len(history[0].parts), 1)
+                system_parts = [
+                    p for p in history[0].parts if isinstance(p, SystemPromptPart)
+                ]
+                self.assertEqual(len(system_parts), 1)
+                self.assertEqual(system_parts[0].content, "You are helpful.")
+                # The user message follows, with no system parts anywhere else.
+                for other in history[1:]:
+                    self.assertFalse(
+                        any(isinstance(p, SystemPromptPart) for p in other.parts)
+                    )
+                self.assertIsInstance(history[1], ModelRequest)
+                self.assertIsInstance(history[1].parts[0], UserPromptPart)
+                self.assertEqual(history[1].parts[0].content[0].content, "Hi")
 
         asyncio.run(_run())
 

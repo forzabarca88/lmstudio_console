@@ -110,8 +110,8 @@ export function renderModelList(dom) {
         const showLoadedBadge = state.isLmStudioEndpoint && isLoaded;
 
         return `<li class="model-item ${isLoaded ? 'loaded' : ''} ${isSelected ? 'selected' : ''}"
-                     data-key="${model.key}"
-                     data-instance-id="${model.loaded_instances?.[0]?.id || model.key}">
+                     data-key="${escapeHtml(model.key)}"
+                     data-instance-id="${escapeHtml(model.loaded_instances?.[0]?.id || model.key)}">
             <div class="model-info">
                 <div class="model-name">${escapeHtml(model.display_name || model.key)}</div>
             </div>

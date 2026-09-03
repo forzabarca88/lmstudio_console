@@ -63,10 +63,16 @@ const dom = {
 /* ═══════════════════════════════════════════
    MARKED CONFIG
    ═══════════════════════════════════════════ */
-marked.setOptions({
-    breaks: true,
-    gfm: true,
-});
+// Guard: marked is loaded as a classic script from /static/vendor/ before
+// this module graph loads, but if the vendored file is missing (e.g. an
+// incomplete deploy), a top-level ReferenceError here would kill the entire
+// ES-module graph at import time. Degrade gracefully instead.
+if (typeof marked !== "undefined") {
+    marked.setOptions({
+        breaks: true,
+        gfm: true,
+    });
+}
 
 /* ═══════════════════════════════════════════
    EVENT BINDINGS
