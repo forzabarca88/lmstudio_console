@@ -1286,6 +1286,116 @@ class TestScreenshot(unittest.TestCase):
         self.assertTrue(self.page.locator("#streamingIndicator").is_hidden())
         self.assertEqual(self.page.locator(".tool-call").count(), 1)
 
+    def test_thinking_stream_autoscrolls(self):
+        """Interactive: streamed thinking auto-scrolls to the latest content.
+
+        The .thinking-content area is its own scroll context (max-height
+        300px, overflow-y: auto). While thinking tokens stream in, the UI
+        must keep the latest content in view INSIDE that area, not just
+        scroll the outer chat container (SPEC: generated messages, including
+        thinking, auto-scroll while streaming).
+
+        The mock /api/chat streams 60 thinking deltas (~4.8KB — well past
+        the 300px cap), then holds the stream open so the test can assert
+        the mid-stream scroll position, then finalizes.
+        """
+        self._navigate()
+        self.page.set_viewport_size({"width": 1280, "height": 800})
+        self._enable_chat_ui_for_test_model()
+
+        self.page.evaluate(
+            """async () => {
+                const stateMod = await import('/static/js/state.js');
+                stateMod.state.chatMessages = [];
+
+                const originalFetch = window.fetch;
+                const encoder = new TextEncoder();
+                const lines = [];
+                for (let i = 0; i < 60; i++) {
+                    lines.push(`data: ${JSON.stringify({ thinking: `delta ${i} ` + "x".repeat(75) })}\\n\\n`);
+                }
+                lines.push(`data: ${JSON.stringify({ thinking_done: true })}\\n\\n`);
+                lines.push(`data: ${JSON.stringify({ content: 'The answer is 42.' })}\\n\\n`);
+                lines.push(`data: ${JSON.stringify({ __usage__: { prompt_tokens: 2, completion_tokens: 5, total_tokens: 7 } })}\\n\\n`);
+
+                window.fetch = (url, options) => {
+                    if (url !== '/api/chat') return originalFetch(url, options);
+                    const stream = new ReadableStream({
+                        start(controller) {
+                            let index = 0;
+                            const push = () => {
+                                if (index >= lines.length) {
+                                    controller.close();
+                                    return;
+                                }
+                                controller.enqueue(encoder.encode(lines[index++]));
+                                if (index === 60) {
+                                    // All thinking deltas are in; hold the
+                                    // stream open so the test can inspect
+                                    // the mid-stream scroll state.
+                                    window.__thinkingStreamHolding = true;
+                                    setTimeout(push, 3000);
+                                } else {
+                                    setTimeout(push, 15);
+                                }
+                            };
+                            push();
+                        },
+                    });
+                    return Promise.resolve(new Response(stream, {
+                        status: 200,
+                        headers: { 'Content-Type': 'text/event-stream' },
+                    }));
+                };
+            }"""
+        )
+
+        self.page.fill("#chatInput", "Please think about this")
+        self._click_send_btn()
+
+        # ARRANGE: wait until all thinking deltas have been streamed (hold)
+        self.page.wait_for_function("window.__thinkingStreamHolding === true", timeout=15000)
+
+        # ACT: read the inner scroll area's position while streaming
+        scroll = self.page.evaluate(
+            """() => {
+                const el = document.querySelector('.thinking-content');
+                if (!el) return null;
+                const details = el.closest('details');
+                return {
+                    scrollTop: el.scrollTop,
+                    clientHeight: el.clientHeight,
+                    scrollHeight: el.scrollHeight,
+                    open: details ? details.open : null,
+                };
+            }"""
+        )
+
+        # ASSERT: block is expanded, content overflows the 300px cap, and the
+        # latest tokens are scrolled into view inside the inner scroll area.
+        self.assertIsNotNone(scroll, "thinking block should be visible while streaming")
+        self.assertTrue(scroll["open"], "thinking block must be expanded while streaming")
+        self.assertGreater(
+            scroll["scrollHeight"], scroll["clientHeight"],
+            "thinking content must overflow the 300px area for this test to be meaningful",
+        )
+        self.assertGreaterEqual(
+            scroll["scrollTop"] + scroll["clientHeight"],
+            scroll["scrollHeight"] - 2,
+            "latest thinking tokens must be scrolled into view while streaming",
+        )
+
+        self._assert_screenshot_png(self._screenshot("33_thinking_stream_autoscroll"), 1280, 800)
+
+        # Stream finalizes: thinking block collapses and the answer renders
+        self.page.wait_for_selector(
+            ".message.assistant .message-text:has-text('The answer is 42')", timeout=15000
+        )
+        self.page.wait_for_selector("#streamingIndicator", state="hidden", timeout=10000)
+        self.assertTrue(self.page.locator("#streamingIndicator").is_hidden())
+
+        self._assert_screenshot_png(self._screenshot("34_thinking_finalized"), 1280, 800)
+
     def test_xss_payload_sanitized_in_assistant_render(self):
         """Behavioral: XSS in a mock assistant reply is sanitized on render.
 
@@ -1354,6 +1464,71 @@ class TestScreenshot(unittest.TestCase):
         self.assertEqual(strong.text_content(), "bold")
 
         self._assert_screenshot_png(self._screenshot("30_xss_sanitized"), 1280, 720)
+
+    def test_mermaid_renders_from_vendored_lib(self):
+        """Behavioral: Mermaid diagrams in chat responses render as SVG from the vendored library.
+
+        SPEC: "Responses can render graphs using Mermaid JS." The library is
+        served from /static/vendor/ (pinned build, works offline) — the page
+        must not depend on an external CDN. The real renderContent() path is
+        exercised so the vendored script is loaded, initialized, and used.
+        """
+        self._navigate()
+        self.page.set_viewport_size({"width": 1280, "height": 800})
+
+        # The mermaid script must be the local vendored build, not a CDN.
+        script_src = self.page.evaluate(
+            "() => document.querySelector('script[src*=\"mermaid\"]').src"
+        )
+        self.assertTrue(
+            script_src.startswith(BASE_URL + "/static/vendor/"),
+            f"mermaid must be served from /static/vendor/ (offline-safe), got: {script_src}",
+        )
+        self.assertNotIn("cdn", script_src.lower())
+
+        # The global exposes the v10 API surface chat.js depends on.
+        api = self.page.evaluate(
+            "() => ({ init: typeof mermaid.initialize, render: typeof mermaid.render })"
+        )
+        self.assertEqual(api, {"init": "function", "render": "function"})
+
+        # The real render path must turn a ```mermaid fence into an inline SVG.
+        self.page.evaluate(
+            """async () => {
+                const chatMod = await import('/static/js/chat.js');
+                const stateMod = await import('/static/js/state.js');
+                document.getElementById('emptyState').style.display = 'none';
+                document.getElementById('chatHeader').style.display = 'flex';
+                document.getElementById('chatMessages').style.display = 'flex';
+                const dom = { chatMessages: document.getElementById('chatMessages') };
+                const content = 'Flow:\\n\\n```mermaid\\ngraph TD; A-->B; B-->C;\\n```';
+                stateMod.state.chatMessages.push({ role: 'assistant', content });
+                chatMod.appendMessage(dom, { role: 'assistant', content }, 'assistant');
+            }"""
+        )
+
+        # mermaid.render is async — wait for the SVG to appear
+        self.page.wait_for_selector(".message.assistant .mermaid svg", timeout=15000)
+
+        # Node labels render as <span> inside SVG <foreignObject> (mermaid's
+        # htmlLabels mode). DOMPurify strips foreignObject content, so this
+        # also guards against the sanitizer breaking diagram labels.
+        spans = self.page.evaluate(
+            "() => Array.from(document.querySelectorAll("
+            "'.message.assistant .mermaid svg foreignObject span'))"
+            ".map(s => s.textContent)"
+        )
+        for label in ("A", "B", "C"):
+            self.assertIn(label, spans)
+
+        # The raw fence is replaced by the SVG (pre hidden via .mermaid-pre)
+        self.assertEqual(self.page.locator(".message.assistant pre.mermaid-pre").count(), 1)
+        self.assertTrue(
+            self.page.evaluate("() => getComputedStyle(document.querySelector('.message.assistant pre.mermaid-pre')).display === 'none'"),
+            "the raw mermaid fence must be hidden once the SVG renders",
+        )
+
+        self._assert_screenshot_png(self._screenshot("35_mermaid_diagram"), 1280, 800)
 
     # --- Theme tests ---
 

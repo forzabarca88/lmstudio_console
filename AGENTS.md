@@ -43,7 +43,7 @@
 │   │   ├── state.js         # State management: localStorage persistence for settings/session history; runtime abort controller and reason tracking; theme management with applyTheme
 │   │   ├── trace.js         # Live trace log panel: SSE streaming from /api/trace-logs, auto-scroll, pause/resume, exponential backoff reconnect
 │   │   └── ui.js            # UI utilities: toast notifications, formatting, auto-resize, scroll, metrics display
-│   ├── vendor/              # Pinned vendored frontend libraries (marked 15.0.7, DOMPurify 3.2.4) served at /static/vendor/ so markdown + sanitization work offline
+│   ├── vendor/              # Pinned vendored frontend libraries (marked 15.0.7, DOMPurify 3.2.4, mermaid 10.9.8) served at /static/vendor/ so markdown, sanitization and diagram rendering work offline
 │   └── index.html          # Main HTML page with sidebar (Connection, Models, History, Settings, Trace Log), chat area, and toast container
 ├── tests/
 │   ├── __init__.py          # Empty test package init
@@ -80,6 +80,10 @@ CSS is split into a theme-agnostic `base.css` (layout, reset, components) and sw
 - `PartDeltaEvent(ThinkingPartDelta)` contains incremental thinking text; emit it as `thinking` and accumulate it with frontend `+=`.
 - `PartStartEvent(TextPart)` and `PartDeltaEvent(TextPartDelta)` are incremental content sources; frontend accumulates `content` with `+=`.
 - Do not emit or log `PartEndEvent` full accumulated content as a new delta; it repeats prior text.
+
+### Mermaid Security Model
+
+`renderContent()` inserts mermaid SVG output **without** DOMPurify: mermaid runs at `securityLevel: "strict"` (enforced via `mermaidConfig()` in state.js, which every `mermaid.initialize()` call must use since initialize replaces the whole config) and sanitizes label HTML internally. DOMPurify cannot round-trip SVG `<foreignObject>` content and would silently strip every node/edge label — do not wrap the SVG in `_setHtml`.
 
 ### Tool Call Streaming
 

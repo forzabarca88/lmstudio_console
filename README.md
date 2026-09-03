@@ -100,7 +100,7 @@ The app runs as a non-root user; configure ports/URLs via the same environment v
 │   │   ├── state.js   # State & localStorage
 │   │   ├── trace.js   # SSE client for live trace log streaming
 │   │   └── ui.js      # UI utilities + metrics display
-│   ├── vendor/        # Pinned vendored frontend libraries (marked 15.0.7, DOMPurify 3.2.4) served at /static/vendor/ so markdown + sanitization work offline
+│   ├── vendor/        # Pinned vendored frontend libraries (marked 15.0.7, DOMPurify 3.2.4, mermaid 10.9.8) served at /static/vendor/ so markdown, sanitization and diagram rendering work offline
 │   └── index.html     # Page structure with collapsible sidebar (chevron tab on desktop, toggle on mobile)
 ├── tests/
 │   ├── __init__.py

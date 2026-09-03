@@ -426,6 +426,24 @@ const MERMAID_THEMES = {
 };
 
 /**
+ * Build the complete mermaid configuration for a theme.
+ *
+ * `mermaid.initialize()` *replaces* the entire config, so every call site
+ * must pass the full set — most importantly `securityLevel: "strict"`
+ * (disables click handlers and other interactive features in
+ * model-generated diagrams).
+ * @param {string} themeName - Theme key: "cyberpunk", "light", or "warm".
+ * @returns {Object} Config object for `mermaid.initialize()`.
+ */
+export function mermaidConfig(themeName) {
+    return {
+        startOnLoad: false,
+        theme: MERMAID_THEMES[themeName] || "dark",
+        securityLevel: "strict",
+    };
+}
+
+/**
  * Apply a UI theme: swap stylesheet, update state, persist, and reinit mermaid.
  * @param {string} themeName - Theme key: "cyberpunk", "light", or "warm".
  */
@@ -442,9 +460,9 @@ export function applyTheme(themeName) {
     // Persist
     saveSettings();
 
-    // Reinitialize mermaid with matching theme
+    // Reinitialize mermaid with the full config for the matching theme
     if (typeof mermaid !== "undefined") {
-        mermaid.initialize({ theme: MERMAID_THEMES[themeName] || "dark" });
+        mermaid.initialize(mermaidConfig(themeName));
     }
 
     // Dispatch custom event for other modules

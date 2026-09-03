@@ -6,21 +6,15 @@
  * content, thinking, and tool lifecycle events to this module.
  */
 
-import { state, saveSettings, saveCurrentSession, saveSessionHistory, abortActiveRequest } from "./state.js";
+import { state, saveSettings, saveCurrentSession, saveSessionHistory, abortActiveRequest, mermaidConfig } from "./state.js";
 import { apiCallChat, apiCall } from "./api.js";
 import { showToast, scrollToBottom, autoResizeInput, updateMetrics, escapeHtml } from "./ui.js";
 import { renderHistoryList } from "./history.js";
 
-// Initialize mermaid
+// Initialize mermaid (full config for the persisted theme; "strict"
+// security level is enforced inside mermaidConfig)
 try {
-    mermaid.initialize({
-        startOnLoad: false,
-        theme: "dark",
-        // "strict" disables click handlers and other interactive features in
-        // rendered diagrams, limiting the attack surface of model-generated
-        // diagram definitions.
-        securityLevel: "strict",
-    });
+    mermaid.initialize(mermaidConfig(state.theme));
 } catch (e) {
     // mermaid may not be loaded yet
 }
@@ -417,6 +411,19 @@ export async function sendMessage(dom) {
     }
 
     /**
+     * Scroll the .thinking-content area to the latest content.
+     *
+     * It is its own scroll context (max-height: 300px; overflow-y: auto),
+     * so once streamed thinking exceeds that height, scrolling only the
+     * outer chat container leaves the newest tokens hidden below its fold.
+     */
+    function scrollThinkingToBottom() {
+        if (thinkingContentEl) {
+            thinkingContentEl.scrollTop = thinkingContentEl.scrollHeight;
+        }
+    }
+
+    /**
      * Create a tool call element and insert before the assistant placeholder.
      */
     function createToolCallElement(toolCallId, name, args) {
@@ -653,8 +660,9 @@ export async function sendMessage(dom) {
                                 thinkingContent += parsed.thinking;
                                 if (thinkingContentEl) {
                                     thinkingContentEl.textContent = thinkingContent;
-                                    scrollToBottom(dom.chatMessages);
                                 }
+                                scrollThinkingToBottom();
+                                scrollToBottom(dom.chatMessages);
                             }
                             continue;
                         }
@@ -664,8 +672,9 @@ export async function sendMessage(dom) {
                                 thinkingContent = parsed.thinking_full;
                                 if (thinkingContentEl) {
                                     thinkingContentEl.textContent = thinkingContent;
-                                    scrollToBottom(dom.chatMessages);
                                 }
+                                scrollThinkingToBottom();
+                                scrollToBottom(dom.chatMessages);
                             }
                             continue;
                         }
@@ -1035,8 +1044,9 @@ export async function renderContent(el, content) {
     const mermaidRegex = /```mermaid\s*([\s\S]*?)```/g;
     const hasMermaid = mermaidRegex.test(content);
 
-    // Mermaid is a pinned CDN script; if it failed to load (offline), fall
-    // back to plain sanitized markdown so content still renders.
+    // Mermaid is served from /static/vendor/ (pinned build, works offline).
+    // If the global is still missing (e.g. an incomplete deploy), fall back
+    // to plain sanitized markdown so content still renders.
     if (hasMermaid && typeof mermaid !== "undefined") {
         _setHtml(el, marked.parse(content));
 
@@ -1053,10 +1063,20 @@ export async function renderContent(el, content) {
 
                 try {
                     const { svg } = await mermaid.render(svgId, graphDef);
+                    // Insert the SVG directly rather than through DOMPurify:
+                    // with securityLevel "strict", mermaid sanitizes all
+                    // label HTML internally and the structure is
+                    // library-generated, but DOMPurify cannot round-trip SVG
+                    // <foreignObject> content and would silently strip every
+                    // node/edge label. The structural check guards against a
+                    // non-SVG render result.
+                    if (typeof svg !== "string" || !svg.trim().startsWith("<svg")) {
+                        throw new Error("Unexpected mermaid render output");
+                    }
                     pre.classList.add("mermaid-pre");
                     const svgDiv = document.createElement("div");
                     svgDiv.className = "mermaid";
-                    _setHtml(svgDiv, svg);
+                    svgDiv.innerHTML = svg;
                     pre.parentNode.insertBefore(svgDiv, pre.nextSibling);
                 } catch (e) {
                     pre.classList.remove("mermaid-pre");
