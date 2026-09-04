@@ -11,6 +11,14 @@ import { showToast, autoResizeInput, updateMetrics } from "./ui.js";
 import { connectTraceLog, disconnectTraceLog, clearTraceLog, togglePause } from "./trace.js";
 
 /* ═══════════════════════════════════════════
+   BREAKPOINT
+   ═══════════════════════════════════════════ */
+// Mobile breakpoint for matchMedia — must stay in sync with the CSS
+// media-query breakpoints (max-width: 900px / min-width: 901px) in
+// static/css/base.css and the theme files.
+const MOBILE_QUERY = "(max-width: 900px)";
+
+/* ═══════════════════════════════════════════
    DOM REFERENCES
    ═══════════════════════════════════════════ */
 const dom = {
@@ -191,9 +199,28 @@ window.removeAttachment = function(index) {
     renderAttachmentPreview(dom);
 };
 
+// Keep the toggle button's label, chevron character, and aria-expanded in
+// sync with the sidebar's collapsed state and the current breakpoint.
+// Mobile collapses upward (▲ expanded / ▼ collapsed); desktop collapses to
+// a left rail (◀ expanded / ▶ collapsed).
+function syncSidebarToggle() {
+    const collapsed = dom.sidebar.classList.contains("collapsed");
+    const isMobile = window.matchMedia(MOBILE_QUERY).matches;
+    dom.sidebarToggle.querySelector("span:first-child").textContent =
+        collapsed ? "Show sidebar" : "Hide sidebar";
+    dom.sidebarToggle.querySelector(".sidebar-chevron").textContent =
+        isMobile ? (collapsed ? "▼" : "▲") : (collapsed ? "▶" : "◀");
+    dom.sidebarToggle.setAttribute("aria-expanded", String(!collapsed));
+}
+
 // Sidebar toggle (desktop: collapse/expand width; mobile: collapse/expand height)
 dom.sidebarToggle.addEventListener("click", () => {
     dom.sidebar.classList.toggle("collapsed");
+    // Record the explicit user choice (null = never toggled) and persist it
+    // so the collapse state survives reloads.
+    state.sidebarCollapsed = dom.sidebar.classList.contains("collapsed");
+    saveSettings();
+    syncSidebarToggle();
 });
 
 // Trace log panel
@@ -229,6 +256,13 @@ window.addEventListener("lmconsole:storage-warning", (e) => {
    INIT
    ═══════════════════════════════════════════ */
 loadSettings(dom);
+// Mobile defaults to the collapsed bar (chat-first layout) unless the user
+// made an explicit persisted choice (null = never toggled). No resize
+// listener: crossing the breakpoint mid-session keeps the current state.
+if (state.sidebarCollapsed === null && window.matchMedia(MOBILE_QUERY).matches) {
+    dom.sidebar.classList.add("collapsed");
+}
+syncSidebarToggle();
 applyTheme(state.theme);
 if (dom.themeSelect) dom.themeSelect.value = state.theme;
 autoResizeInput(dom.chatInput);

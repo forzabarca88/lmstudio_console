@@ -195,6 +195,10 @@ export const state = {
     abortReason: null,
     // Theme
     theme: "cyberpunk",
+    // Sidebar collapse: null = user has never toggled (the mobile
+    // default-collapsed logic in app.js depends on null); only an explicit
+    // toggle click ever sets it.
+    sidebarCollapsed: null,
     // Agentic tools
     toolCallEnabled: false,
     // File attachments for multimodal messages
@@ -214,6 +218,12 @@ export function saveSettings() {
         toolCallEnabled: state.toolCallEnabled,
         theme: state.theme,
     };
+    // Persist the collapse choice only once the user has explicitly toggled
+    // it (null = never touched), so a first visit on mobile can still get
+    // the platform default.
+    if (state.sidebarCollapsed !== null) {
+        settings.sidebarCollapsed = state.sidebarCollapsed;
+    }
     if (writeStorage(SETTINGS_KEY, JSON.stringify(settings)) === "quota") {
         dispatchStorageWarning({
             message: "Browser storage is full — settings may not be saved.",
@@ -408,6 +418,12 @@ export function loadSettings(dom) {
             }
             if (saved.theme) {
                 state.theme = saved.theme;
+            }
+            if (typeof saved.sidebarCollapsed === "boolean") {
+                state.sidebarCollapsed = saved.sidebarCollapsed;
+                if (dom.sidebar) {
+                    dom.sidebar.classList.toggle("collapsed", state.sidebarCollapsed === true);
+                }
             }
         }
     } catch (e) {

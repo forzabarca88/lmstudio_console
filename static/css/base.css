@@ -13,6 +13,7 @@ body {
     background: var(--bg-base);
     color: var(--text-primary);
     height: 100vh;
+    height: 100dvh;
     display: flex;
     overflow: hidden;
 }
@@ -679,6 +680,9 @@ input[type="range"] {
    ═══════════════════════════════════════════ */
 .chat-input-area {
     padding: 16px 24px;
+    /* Keep the input clear of the home indicator / browser chrome on
+       notched devices (viewport-fit: cover); wins over the shorthand. */
+    padding-bottom: calc(16px + env(safe-area-inset-bottom, 0px));
     border-top: 1px solid var(--border);
     background: var(--bg-panel);
 }
@@ -846,7 +850,7 @@ input[type="range"] {
    ═══════════════════════════════════════════ */
 .toast-container {
     position: fixed;
-    top: 16px;
+    top: calc(16px + env(safe-area-inset-top, 0px));
     right: 16px;
     z-index: 1000;
     display: flex;
@@ -864,7 +868,9 @@ input[type="range"] {
     color: var(--text-primary);
     box-shadow: 0 4px 20px var(--shadow-color);
     animation: slideIn 0.2s ease-out;
-    max-width: 360px;
+    /* Container is right: 16px; cap at 100vw - 32px so toasts stay fully
+       on-screen (16px margin on both sides) on ≤360px-wide phones. */
+    max-width: min(360px, calc(100vw - 32px));
 }
 
 .toast.success {
@@ -952,7 +958,11 @@ input[type="range"] {
 /* ═══════════════════════════════════════════
    RESPONSIVE
    ═══════════════════════════════════════════ */
-@media (max-width: 768px) {
+@media (max-width: 900px) {
+    /* Readable base type on phones: rem-based labels/controls jump from
+       ~9.8px to ~11.2px (desktop keeps the 14px base). */
+    html { font-size: 16px; }
+
     body { flex-direction: column; }
 
     .sidebar {
@@ -961,6 +971,9 @@ input[type="range"] {
         max-height: 45vh;
         border-right: none;
         border-bottom: 1px solid var(--border);
+        /* viewport-fit: cover lets the top bar slide under the status
+           bar / notch on notched phones; inset it back on screen. */
+        padding-top: env(safe-area-inset-top, 0px);
     }
 
     .main {
@@ -968,15 +981,18 @@ input[type="range"] {
         min-height: 0;
     }
 
-    /* Mobile: full-width toggle button at the bottom of the sidebar */
+    /* Mobile: full-width toggle button at the bottom of the sidebar.
+       min-height 44px is the touch-target size; height:auto + min-height
+       compose, so the hit area never shrinks below 44px. */
     .sidebar-toggle {
         position: static;
         width: 100%;
         height: auto;
+        min-height: 44px;
         transform: none;
         border-radius: 0;
         padding: 8px;
-        font-size: 0.7rem;
+        font-size: 0.85rem;
         gap: 6px;
     }
 
@@ -985,19 +1001,61 @@ input[type="range"] {
         display: inline;
     }
 
-    /* Mobile collapsed: full-width bar, content hidden */
+    /* Mobile collapsed: full-width bar, content hidden. Grown to fit the
+       44px toggle: 56px border-box total (the universal border-box reset
+       puts the 1px border-bottom INSIDE the 56px, so the bar is 56px, not
+       57px); the hidden scroll region shrinks to 12px so the 44px toggle
+       sits fully inside the bar. max-height adds
+       env(safe-area-inset-top) so the toggle stays visible under the
+       status bar / notch on viewport-fit: cover devices (inset is 0 in
+       desktop browsers, so the bar stays 56px there). */
     .sidebar.collapsed {
         width: 100%;
         min-width: 100%;
-        max-height: 44px;
+        max-height: calc(56px + env(safe-area-inset-top, 0px));
         overflow: hidden;
         border-right: none;
         border-bottom: 1px solid var(--border);
     }
 
+    /* Touch targets: every tappable control reaches 44px on phones. */
+    .btn { min-height: 44px; padding: 12px 14px; font-size: 0.85rem; }
+    .history-toggle, .section-toggle { min-height: 44px; font-size: 0.9rem; }
+    .trace-controls button { min-height: 44px; padding: 10px 14px; font-size: 0.8rem; }
+    .send-btn, .attach-btn { width: 44px; height: 44px; }
+    input[type="range"] { height: 32px; }
+
     .chat-messages { padding: 16px; }
-    .chat-input-area { padding: 12px 16px; }
+    /* Match the base safe-area bottom padding at the mobile 12px base. */
+    .chat-input-area {
+        padding: 12px 16px;
+        padding-bottom: calc(12px + env(safe-area-inset-bottom, 0px));
+    }
     .chat-header { padding: 12px 16px; }
+    /* Sidebar section paddings for phones (absorbed from theme-light.css —
+       layout belongs in base.css; comfortable mobile values). */
+    .section { padding: 14px 16px; }
+    .sidebar-header { padding: 16px 14px 12px; }
+    .status-bar { padding: 10px 14px; }
+
+    /* 16px input text prevents iOS Safari's auto-zoom-on-focus. */
+    .chat-input { font-size: 16px; }
+
+    /* Bigger hint type at the 16px base (see html rule above). */
+    .input-hint { font-size: 0.7rem; }
+
+    /* Kill nested scrolling: let history/trace entries flow inside the
+       single .sidebar-scroll context instead of creating their own
+       scrollbars on phones (the 300px/240px caps above stay desktop-only).
+       Their overflow-y: auto is harmless once max-height is none. */
+    .history-list { max-height: none; }
+    .trace-log { max-height: none; }
+}
+
+/* Touch devices have no "Shift + Enter" — hide the keyboard hint there;
+   mouse/trackpad devices keep it. */
+@media (hover: none) and (pointer: coarse) {
+    .input-hint { display: none; }
 }
 
 /* Sidebar toggle — shared styles. Positioning differs per breakpoint:
@@ -1020,15 +1078,6 @@ input[type="range"] {
     color: var(--text-primary);
 }
 
-/* Chevron rotation: ◀ (expanded) → ▶ (collapsed) */
-.sidebar-chevron {
-    transition: transform 0.2s;
-}
-
-.sidebar.collapsed .sidebar-chevron {
-    transform: rotate(180deg);
-}
-
 /* When collapsed, hide the scrollable content. The .sidebar-toggle is a
    direct child of .sidebar (outside the scroll region), so it remains
    visible and interactive in the collapsed rail/bar. */
@@ -1046,7 +1095,7 @@ input[type="range"] {
 
 /* Desktop: chevron tab on the right edge of the sidebar, vertically
    centered. Stays visible when the sidebar collapses to a 20px rail. */
-@media (min-width: 769px) {
+@media (min-width: 901px) {
     .sidebar-toggle {
         position: absolute;
         right: 0;

@@ -91,7 +91,7 @@ CSS is split into a theme-agnostic `base.css` (layout, reset, components) and sw
 
 ### Sidebar Collapse
 
-The sidebar is collapsible on all screen sizes. On desktop, a chevron tab on the right edge toggles collapse (sidebar narrows to 20px, content hidden). On mobile, a full-width toggle button at the bottom of the sidebar collapses content vertically. CSS transitions animate both states.
+The sidebar is collapsible on all screen sizes (mobile = ≤900px, desktop = ≥901px). On desktop, a chevron tab on the right edge toggles collapse (sidebar narrows to 20px, content hidden). On mobile it starts **collapsed** (a full-width bar; chat-first) unless the user has explicitly toggled it — the choice persists in localStorage via `sidebarCollapsed` in state.js. The toggle's label ("Hide sidebar"/"Show sidebar"), chevron glyph (▲/▼ mobile, ◀/▶ desktop), and `aria-expanded` are kept in sync by `syncSidebarToggle()` in app.js; the `MOBILE_QUERY` constant there must stay in sync with the CSS media-query breakpoints in base.css and the theme files.
 
 ### Trace Log Readability
 

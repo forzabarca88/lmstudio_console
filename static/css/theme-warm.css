@@ -122,7 +122,7 @@
 
 /* Sidebar toggle — very rounded. Scoped to the desktop chevron tab;
    the mobile full-width toggle stays square (see base.css). */
-@media (min-width: 769px) {
+@media (min-width: 901px) {
     .sidebar-toggle {
         border-radius: var(--radius-sm) 0 0 var(--radius-sm);
     }

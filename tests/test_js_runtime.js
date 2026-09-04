@@ -225,6 +225,7 @@ await runTest("state exists with defaults", () => {
     assert.deepEqual(s.metrics, { tokensPerSecond: 0, timeToFirstToken: null, totalTokens: 0 });
     assert.equal(s.toolCallEnabled, false);
     assert.deepEqual(s.attachments, []);
+    assert.equal(s.sidebarCollapsed, null, "sidebarCollapsed defaults to null (never toggled)");
 });
 
 await runTest("generateUuid falls back without crypto.randomUUID", () => {
@@ -266,6 +267,15 @@ await runTest("saveSettings persists to localStorage", () => {
     stateModule.state.temperature = 0.5;
     stateModule.state.toolCallEnabled = true;
     stateModule.state.selectedModel = "test-model";
+
+    // Never toggled: the key must be absent from persisted settings
+    stateModule.state.sidebarCollapsed = null;
+    stateModule.saveSettings();
+    const savedDefault = JSON.parse(globalThis.localStorage.getItem("lm_console_settings"));
+    assert.equal("sidebarCollapsed" in savedDefault, false, "sidebarCollapsed omitted when null");
+
+    // Explicit choice: round-trips through the persisted JSON
+    stateModule.state.sidebarCollapsed = true;
     stateModule.saveSettings();
 
     const saved = JSON.parse(globalThis.localStorage.getItem("lm_console_settings"));
@@ -274,6 +284,7 @@ await runTest("saveSettings persists to localStorage", () => {
     assert.equal(saved.temperature, 0.5);
     assert.equal(saved.toolCallEnabled, true);
     assert.equal(saved.selectedModel, "test-model");
+    assert.equal(saved.sidebarCollapsed, true);
 });
 
 await runTest("loadSettings restores from localStorage", () => {
@@ -285,6 +296,7 @@ await runTest("loadSettings restores from localStorage", () => {
         temperature: 0.3,
         selectedModel: "restored-model",
         toolCallEnabled: true,
+        sidebarCollapsed: false,
     }));
 
     // Reset state
@@ -293,6 +305,7 @@ await runTest("loadSettings restores from localStorage", () => {
     stateModule.state.temperature = 0.7;
     stateModule.state.toolCallEnabled = false;
     stateModule.state.selectedModel = null;
+    stateModule.state.sidebarCollapsed = null;
 
     const dom = {
         endpoint: { value: "" },
@@ -301,6 +314,8 @@ await runTest("loadSettings restores from localStorage", () => {
         temperature: { value: "" },
         temperatureValue: { textContent: "" },
         toolCallToggle: { checked: false },
+        // classList is a no-op in the mock — assert on state, not classes
+        sidebar: { classList: { toggle() {} } },
     };
     stateModule.loadSettings(dom);
 
@@ -309,6 +324,7 @@ await runTest("loadSettings restores from localStorage", () => {
     assert.equal(stateModule.state.systemPrompt, "Restored prompt");
     assert.equal(stateModule.state.temperature, 0.3);
     assert.equal(stateModule.state.toolCallEnabled, true);
+    assert.equal(stateModule.state.sidebarCollapsed, false);
 });
 
 await runTest("saveCurrentSession handles multimodal content", () => {

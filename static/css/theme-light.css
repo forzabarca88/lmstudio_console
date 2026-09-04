@@ -506,7 +506,7 @@ select {
 
 /* Sidebar toggle — sharp corners. Scoped to the desktop chevron tab;
    the mobile full-width toggle stays square (see base.css). */
-@media (min-width: 769px) {
+@media (min-width: 901px) {
     .sidebar-toggle {
         border-radius: 3px 0 0 3px;
     }
@@ -782,16 +782,19 @@ select {
     animation: blink 1s step-end infinite;
 }
 
-/* Send button — tighter dimensions */
-.send-btn {
-    width: 36px;
-    height: 36px;
-}
+/* Send/attach buttons — tighter dimensions. Desktop-only scope: this file
+   loads after base.css, so an unscoped 36px rule would override base.css's
+   44px touch-target sizes on mobile. */
+@media (min-width: 901px) {
+    .send-btn {
+        width: 36px;
+        height: 36px;
+    }
 
-/* Attach button — tighter dimensions */
-.attach-btn {
-    width: 36px;
-    height: 36px;
+    .attach-btn {
+        width: 36px;
+        height: 36px;
+    }
 }
 
 /* Chat input — tighter min/max height */
@@ -809,12 +812,3 @@ select {
     }
 }
 
-/* Mobile overrides — keep corporate feel */
-@media (max-width: 768px) {
-    .chat-messages { padding: 12px; }
-    .chat-input-area { padding: 10px 14px; }
-    .chat-header { padding: 8px 14px; }
-    .section { padding: 10px 14px; }
-    .sidebar-header { padding: 14px 12px 10px; }
-    .status-bar { padding: 8px 12px; }
-}

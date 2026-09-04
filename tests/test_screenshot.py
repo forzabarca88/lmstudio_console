@@ -900,58 +900,68 @@ class TestScreenshot(unittest.TestCase):
         self._assert_screenshot_png(self._screenshot("24b_sidebar_restored"), 1280, 800)
 
     def test_sidebar_collapse_mobile(self):
-        """Mobile: Collapsed sidebar keeps a visible, clickable toggle.
+        """Mobile: sidebar defaults to a collapsed bar with a visible toggle.
 
-        On a narrow viewport the sidebar collapses to a short bar. The
-        toggle must remain visible and tappable inside that bar so the
-        sidebar can be re-expanded (regression: the toggle used to be
-        clipped away, leaving a stuck collapsed state).
+        On a narrow viewport the sidebar starts collapsed by default
+        (chat-first mobile layout). The toggle must remain visible and
+        tappable inside that bar so the sidebar can be expanded, and
+        clicking it again collapses it back to the bar.
         """
         self.page.set_viewport_size({"width": 352, "height": 1063})
         self._navigate()
 
-        # Collapse via the toggle
-        self.page.click("#sidebarToggle")
-        self.page.wait_for_timeout(500)
-
-        self.assertTrue(
-            self.page.evaluate(
-                "document.getElementById('sidebar').classList.contains('collapsed')"
-            ),
-            "Sidebar should have collapsed class after toggle on mobile"
-        )
-
-        info = self.page.evaluate("""() => {
+        bar_geometry_js = """() => {
             const sb = document.getElementById('sidebar');
             const t = document.getElementById('sidebarToggle');
             const b = t.getBoundingClientRect();
             return {
                 sbHeight: sb.getBoundingClientRect().height,
                 toggle: {x: b.x, y: b.y, w: b.width, h: b.height},
-                opacity: getComputedStyle(t).opacity
+                opacity: getComputedStyle(t).opacity,
+                label: t.querySelector('span:first-child').textContent,
+                expanded: t.getAttribute('aria-expanded')
             };
-        }""")
+        }"""
 
-        self.assertLess(
-            info["sbHeight"], 60,
-            f"Collapsed mobile sidebar should be a short bar (got {info['sbHeight']}px)"
-        )
-        self.assertGreater(info["toggle"]["w"], 200, "Toggle should span the sidebar width")
-        self.assertGreater(info["toggle"]["h"], 20, "Toggle should have a tappable height")
-        self.assertGreaterEqual(info["toggle"]["y"], 0, "Toggle should not be above the viewport")
-        self.assertLessEqual(
-            info["toggle"]["y"] + info["toggle"]["h"], info["sbHeight"],
-            "Toggle should be fully inside the collapsed bar"
-        )
-        self.assertEqual(info["opacity"], "1")
+        def assert_bar_geometry(info):
+            self.assertLess(
+                info["sbHeight"], 60,
+                f"Collapsed mobile sidebar should be a short bar (got {info['sbHeight']}px)"
+            )
+            self.assertGreater(info["toggle"]["w"], 200, "Toggle should span the sidebar width")
+            self.assertGreater(info["toggle"]["h"], 20, "Toggle should have a tappable height")
+            self.assertGreaterEqual(info["toggle"]["y"], 0, "Toggle should not be above the viewport")
+            self.assertLessEqual(
+                info["toggle"]["y"] + info["toggle"]["h"], info["sbHeight"],
+                "Toggle should be fully inside the collapsed bar"
+            )
+            self.assertEqual(info["opacity"], "1")
+            self.assertTrue(
+                self.page.locator("#sidebarToggle").is_visible(),
+                "Toggle must be visible while collapsed on mobile"
+            )
+            self.assertEqual(
+                info["label"], "Show sidebar",
+                "Collapsed toggle should be labeled 'Show sidebar'"
+            )
+            self.assertEqual(
+                info["expanded"], "false",
+                "Collapsed toggle should have aria-expanded=false"
+            )
+
+        # Collapsed by default on mobile (no persisted user choice)
         self.assertTrue(
-            self.page.locator("#sidebarToggle").is_visible(),
-            "Toggle must be visible while collapsed on mobile"
+            self.page.evaluate(
+                "document.getElementById('sidebar').classList.contains('collapsed')"
+            ),
+            "Sidebar should be collapsed by default on mobile"
         )
+
+        assert_bar_geometry(self.page.evaluate(bar_geometry_js))
 
         self._assert_screenshot_png(self._screenshot("28_mobile_sidebar_collapsed"), 352, 1063)
 
-        # Re-expand via the same toggle
+        # Expand via the toggle
         self.page.click("#sidebarToggle")
         self.page.wait_for_timeout(500)
 
@@ -959,8 +969,41 @@ class TestScreenshot(unittest.TestCase):
             self.page.evaluate(
                 "document.getElementById('sidebar').classList.contains('collapsed')"
             ),
-            "Sidebar should re-expand when the collapsed toggle is clicked"
+            "Sidebar should expand when the collapsed toggle is clicked"
         )
+        self.assertGreater(
+            self.page.evaluate(
+                "document.getElementById('sidebar').getBoundingClientRect().height"
+            ),
+            60,
+            "Expanded mobile sidebar should be much taller than the collapsed bar"
+        )
+        self.assertEqual(
+            self.page.evaluate(
+                "document.getElementById('sidebarToggle').querySelector('span:first-child').textContent"
+            ),
+            "Hide sidebar",
+            "Expanded toggle should be labeled 'Hide sidebar'"
+        )
+        self.assertEqual(
+            self.page.evaluate(
+                "document.getElementById('sidebarToggle').getAttribute('aria-expanded')"
+            ),
+            "true",
+            "Expanded toggle should have aria-expanded=true"
+        )
+
+        # Collapse again via the same toggle
+        self.page.click("#sidebarToggle")
+        self.page.wait_for_timeout(500)
+
+        self.assertTrue(
+            self.page.evaluate(
+                "document.getElementById('sidebar').classList.contains('collapsed')"
+            ),
+            "Sidebar should re-collapse when the toggle is clicked again"
+        )
+        assert_bar_geometry(self.page.evaluate(bar_geometry_js))
 
         self._assert_screenshot_png(self._screenshot("29_mobile_sidebar_restored"), 352, 1063)
 
@@ -1962,11 +2005,11 @@ class TestScreenshot(unittest.TestCase):
         """SPEC: resize the application window live and validate the UI reflows.
 
         Navigates at the default 1280x720 viewport, then resizes AFTER page
-        load to tablet portrait (820x1180 — above the 768px breakpoint, so
-        desktop layout applies) and to mobile (352x1063 — below the
-        breakpoint). At each stage the layout must reflow without
-        horizontal overflow and the screenshot must be a valid PNG of the
-        exact viewport size.
+        load to tablet portrait (820x1180 — below the 900px breakpoint, so
+        the chat-first mobile column layout applies, intentionally) and to
+        mobile (352x1063 — also below the breakpoint). At each stage the
+        layout must reflow without horizontal overflow and the screenshot
+        must be a valid PNG of the exact viewport size.
         """
         self._navigate()  # default viewport 1280x720
 
@@ -1989,7 +2032,9 @@ class TestScreenshot(unittest.TestCase):
             self._screenshot("32_resize_desktop"), 1280, 720
         )
 
-        # Stage 2: tablet portrait (820x1180) — above the 768px breakpoint
+        # Stage 2: tablet portrait (820x1180) — below the 900px breakpoint,
+        # so tablet portrait intentionally gets the chat-first mobile column
+        # layout (sidebar collapsed to the bar by default).
         self.page.set_viewport_size({"width": 820, "height": 1180})
         self.page.wait_for_timeout(300)
         self.assertTrue(
@@ -2006,7 +2051,7 @@ class TestScreenshot(unittest.TestCase):
             self._screenshot("32_resize_tablet"), 820, 1180
         )
 
-        # Stage 3: mobile (352x1063) — below the 768px breakpoint
+        # Stage 3: mobile (352x1063) — below the 900px breakpoint
         self.page.set_viewport_size({"width": 352, "height": 1063})
         self.page.wait_for_timeout(300)
         self.assertTrue(
