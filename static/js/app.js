@@ -2,7 +2,7 @@
  * Main entry point - wires all modules together and binds events.
  */
 
-import { state, saveSettings, loadSettings, saveSessionHistory, applyTheme } from "./state.js";
+import { state, saveSettings, loadSettings, saveSessionHistory, applyTheme, MOBILE_QUERY } from "./state.js";
 import { connect, disconnect } from "./connection.js";
 import { refreshModels, loadModel, unloadModel } from "./models.js";
 import { sendMessage, newChat, clearAttachments, renderAttachmentPreview, cancelRequest } from "./chat.js";
@@ -13,10 +13,8 @@ import { connectTraceLog, disconnectTraceLog, clearTraceLog, togglePause } from 
 /* ═══════════════════════════════════════════
    BREAKPOINT
    ═══════════════════════════════════════════ */
-// Mobile breakpoint for matchMedia — must stay in sync with the CSS
-// media-query breakpoints (max-width: 900px / min-width: 901px) in
-// static/css/base.css and the theme files.
-const MOBILE_QUERY = "(max-width: 900px)";
+// Mobile breakpoint for matchMedia — single source of truth is the
+// MOBILE_QUERY export in state.js (see the sync note there).
 
 /* ═══════════════════════════════════════════
    DOM REFERENCES
@@ -102,16 +100,36 @@ dom.refreshModelsBtn.addEventListener("click", () => refreshModels(dom));
 dom.loadModelBtn.addEventListener("click", () => loadModel(dom));
 dom.unloadModelBtn.addEventListener("click", () => unloadModel(dom));
 
+// When a collapsible panel opens on mobile, scroll its first field into
+// view within the sidebar's scroll context. On narrow viewports the
+// expanded content lands below the sidebar panel's fold; without this the
+// user sees an empty expansion and cannot find the controls (e.g. system
+// prompt / theme). scrollIntoView() may move any scrollable ancestor, but
+// in this layout .sidebar-scroll is the only scroll container in the chain
+// (the body clips viewport scrolling), and {block: "nearest"} is a no-op
+// when the field is already fully visible. The scroll runs synchronously
+// and relies on the panel's max-height transition being skipped (`0` to
+// `none` is non-interpolatable), so the layout is already final here.
+// Desktop is intentionally skipped: the sidebar spans the full window
+// height and the user may have deliberately scrolled it — do not yank.
+function revealPanelContent(panel, firstField) {
+    if (!panel.classList.contains("open") || !firstField) return;
+    if (typeof window.matchMedia !== "function" || !window.matchMedia(MOBILE_QUERY).matches) return;
+    firstField.scrollIntoView({ block: "nearest" });
+}
+
 // Settings panel toggle
 dom.settingsToggle.addEventListener("click", () => {
     dom.settingsToggle.classList.toggle("open");
     dom.settingsPanel.classList.toggle("open");
+    revealPanelContent(dom.settingsPanel, dom.systemPrompt);
 });
 
 // History panel toggle
 dom.historyToggle.addEventListener("click", () => {
     dom.historyToggle.classList.toggle("open");
     dom.historyPanel.classList.toggle("open");
+    revealPanelContent(dom.historyPanel, dom.historyList);
 });
 
 // Settings persistence
@@ -256,12 +274,11 @@ window.addEventListener("lmconsole:storage-warning", (e) => {
    INIT
    ═══════════════════════════════════════════ */
 loadSettings(dom);
-// Mobile defaults to the collapsed bar (chat-first layout) unless the user
-// made an explicit persisted choice (null = never toggled). No resize
-// listener: crossing the breakpoint mid-session keeps the current state.
-if (state.sidebarCollapsed === null && window.matchMedia(MOBILE_QUERY).matches) {
-    dom.sidebar.classList.add("collapsed");
-}
+// The sidebar starts expanded on every viewport (mobile included) so the
+// connection, model, and settings panels are always reachable — collapsing
+// is opt-in via the toggle. An explicit persisted choice applied by
+// loadSettings() above still wins. No resize listener: crossing the
+// breakpoint mid-session keeps the current state.
 syncSidebarToggle();
 applyTheme(state.theme);
 if (dom.themeSelect) dom.themeSelect.value = state.theme;

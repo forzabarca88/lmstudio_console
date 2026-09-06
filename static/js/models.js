@@ -3,7 +3,7 @@
  * Works with OpenAI-compatible endpoints.
  */
 
-import { state, saveSettings } from "./state.js";
+import { state, saveSettings, MOBILE_QUERY } from "./state.js";
 import { apiCall } from "./api.js";
 import { showToast, formatBytes, escapeHtml, updateMetrics } from "./ui.js";
 import { enableChatControls, updateStatus } from "./connection.js";
@@ -90,6 +90,23 @@ export async function refreshModels(dom) {
 }
 
 /**
+ * On mobile, reveal the freshly rendered model list inside the sidebar's
+ * scroll context. The connection section + model buttons occupy ~430px, so
+ * on phones the first model rows can end up below the sidebar panel's
+ * fold right when they populate (e.g. immediately after a successful
+ * connect+refresh) — without this the user sees the section but not the
+ * models. {block: "nearest"} is a no-op when the list is already fully
+ * visible, so this never yanks the scroll position on tall screens or
+ * during selection clicks. Desktop is skipped entirely.
+ */
+function revealModelList(dom) {
+    if (typeof window.matchMedia !== "function") return;
+    if (!window.matchMedia(MOBILE_QUERY).matches) return;
+    const first = dom.modelList.querySelector(".model-item");
+    if (first) first.scrollIntoView({ block: "nearest" });
+}
+
+/**
  * Render the model list in the sidebar.
  * @param {Object} dom - DOM element references.
  */
@@ -129,6 +146,10 @@ export function renderModelList(dom) {
             enableChatControls(dom);
         });
     });
+
+    // Reveal the list on mobile once it is populated (no-op if already in
+    // view; called after the innerHTML swap so the layout is final).
+    revealModelList(dom);
 }
 
 /**

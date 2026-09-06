@@ -968,7 +968,13 @@ input[type="range"] {
     .sidebar {
         width: 100%;
         min-width: 100%;
-        max-height: 45vh;
+        /* Default cap. On phones tall enough that the connection + model
+           sections (~430px) fit, the model list renders above the panel's
+           fold and is selectable without internal scrolling. Shorter
+           portrait phones get a larger share (extra query below), and
+           models.js auto-reveals the list whenever it does land below the
+           fold. The sidebar still collapses to the 56px bar on demand. */
+        max-height: 65vh;
         border-right: none;
         border-bottom: 1px solid var(--border);
         /* viewport-fit: cover lets the top bar slide under the status
@@ -1050,6 +1056,17 @@ input[type="range"] {
        Their overflow-y: auto is harmless once max-height is none. */
     .history-list { max-height: none; }
     .trace-log { max-height: none; }
+}
+
+/* Short portrait phones (≤750px tall): the fixed ~470px of connection +
+   model content cannot fit inside 65vh, which would leave the model list
+   below the panel's fold on devices like the 375×667 iPhone 6/7/8. Give
+   the sidebar a larger share so the first model rows are visible without
+   scrolling; rendered lists are still auto-revealed by models.js on any
+   device where they do fall below the fold. Landscape phones are excluded
+   so a short wide viewport does not lose extra chat space. */
+@media (max-width: 900px) and (max-height: 750px) and (orientation: portrait) {
+    .sidebar { max-height: 78vh; }
 }
 
 /* Touch devices have no "Shift + Enter" — hide the keyboard hint there;

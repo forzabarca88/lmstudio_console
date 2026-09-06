@@ -35,12 +35,12 @@
 │   ├── favicon.svg          # Browser tab icon
 │   ├── js/
 │   │   ├── api.js           # API call utilities for proxy requests, streaming, and chat endpoint with optional AbortSignal forwarding
-│   │   ├── app.js           # Main entry point wiring all modules together; send button toggles between send and stop/cancel; collapsible sidebar toggle; trace log panel wiring
+│   │   ├── app.js           # Main entry point wiring all modules together; send button toggles between send and stop/cancel; collapsible sidebar toggle (expanded by default); opened panels scroll into view; trace log panel wiring
 │   │   ├── chat.js          # Chat: send messages, streaming responses, thinking blocks, tool call display (executing + done/error via SSE events), metrics, file attachments (abortable), copy button, stop/cancel button with partial-content preservation
 │   │   ├── connection.js    # Connection management: connect/disconnect (aborts active requests), status updates, heartbeat monitoring
 │   │   ├── history.js       # Chat session history: render, continue (aborts active requests), delete sessions (aborts if current)
-│   │   ├── models.js        # Model management: list, refresh, load, unload models with LM Studio native API
-│   │   ├── state.js         # State management: localStorage persistence for settings/session history; runtime abort controller and reason tracking; theme management with applyTheme
+│   │   ├── models.js        # Model management: list, refresh, load, unload models with LM Studio native API; renders model list and auto-reveals it within the mobile sidebar when it lands below the fold
+│   │   ├── state.js         # State management: localStorage persistence for settings/session history; runtime abort controller and reason tracking; theme management with applyTheme; MOBILE_QUERY breakpoint constant (single source for matchMedia callers)
 │   │   ├── trace.js         # Live trace log panel: SSE streaming from /api/trace-logs, auto-scroll, pause/resume, exponential backoff reconnect
 │   │   └── ui.js            # UI utilities: toast notifications, formatting, auto-resize, scroll, metrics display
 │   ├── vendor/              # Pinned vendored frontend libraries (marked 15.0.7, DOMPurify 3.2.4, mermaid 10.9.8) served at /static/vendor/ so markdown, sanitization and diagram rendering work offline
@@ -53,7 +53,7 @@
 │   ├── test_tools.py        # Unit tests for tool execution: run_python_code subprocess (output, stderr, timeout, size cap), open_web_page (fetch, truncation, SSRF rejection, errors), live web_search, and agent toolset wiring
 │   ├── test_js_runtime.js   # Node.js runtime tests: state management (defaults, persist, restore, session save with cap incl. audio/file data-URI sanitization, abortActiveRequest), UI utilities, session lifecycle (continue, delete, error handling)
 │   ├── test_js_syntax.py    # Syntax validation tests for all JavaScript modules (Node.js --check and reserved word scanning)
-│   ├── test_screenshot.py   # Playwright tests: visual rendering (page layout, panels, elements, screenshot pixel validation) and interactive behavioral tests (connect, send message, new chat, settings toggle, model load/unload, copy button, stop button, new chat cancels request, sidebar collapse desktop+mobile, trace log overflow stability), XSS sanitization, and live viewport resize (desktop/tablet/mobile)
+│   ├── test_screenshot.py   # Playwright tests: visual rendering (page layout, panels, elements, screenshot pixel validation) and interactive behavioral tests (connect, send message, new chat, settings toggle, model load/unload, copy button, stop button, new chat cancels request, sidebar collapse desktop+mobile, mobile panels visible on load, trace log overflow stability), XSS sanitization, and live viewport resize (desktop/tablet/mobile)
 │   └── test_url_security.py # Unit tests for the SSRF-safe URL validators (DNS resolution mocked)
 ├── .dockerignore            # Build context exclusions for the Docker image
 ├── AGENTS.md                # Project guidelines and documentation
@@ -91,7 +91,9 @@ CSS is split into a theme-agnostic `base.css` (layout, reset, components) and sw
 
 ### Sidebar Collapse
 
-The sidebar is collapsible on all screen sizes (mobile = ≤900px, desktop = ≥901px). On desktop, a chevron tab on the right edge toggles collapse (sidebar narrows to 20px, content hidden). On mobile it starts **collapsed** (a full-width bar; chat-first) unless the user has explicitly toggled it — the choice persists in localStorage via `sidebarCollapsed` in state.js. The toggle's label ("Hide sidebar"/"Show sidebar"), chevron glyph (▲/▼ mobile, ◀/▶ desktop), and `aria-expanded` are kept in sync by `syncSidebarToggle()` in app.js; the `MOBILE_QUERY` constant there must stay in sync with the CSS media-query breakpoints in base.css and the theme files.
+The sidebar is collapsible on all screen sizes (mobile = ≤900px, desktop = ≥901px) and starts **expanded** on both so the connection, model, and settings panels are always reachable (regression: mobile used to start as a collapsed 56px bar, hiding every panel). On desktop a chevron tab on the right edge toggles collapse (sidebar narrows to a 20px rail); on mobile it collapses to a full-width 56px bar. An explicit toggle choice persists in localStorage via `sidebarCollapsed` in state.js. The toggle's label ("Hide sidebar"/"Show sidebar"), chevron glyph (▲/▼ mobile, ◀/▶ desktop), and `aria-expanded` are kept in sync by `syncSidebarToggle()` in app.js. The `MOBILE_QUERY` breakpoint constant is exported by state.js (single source; must stay in sync with the CSS media-query breakpoints in base.css and the theme files).
+
+Mobile heights: the sidebar is capped at 65vh (78vh on short portrait phones ≤750px tall, via an extra media query in base.css) so the connection + model controls stay reachable. Two scroll-into-view behaviors keep content discoverable inside the mobile panel: opening a collapsible panel (Settings/History) scrolls its first field into view, and rendering the model list (models.js) scrolls the first model row into view when it would otherwise fall below the fold. Both are mobile-only and no-ops when the target is already fully visible.
 
 ### Trace Log Readability
 

@@ -900,12 +900,13 @@ class TestScreenshot(unittest.TestCase):
         self._assert_screenshot_png(self._screenshot("24b_sidebar_restored"), 1280, 800)
 
     def test_sidebar_collapse_mobile(self):
-        """Mobile: sidebar defaults to a collapsed bar with a visible toggle.
+        """Mobile: sidebar starts expanded; the toggle collapses it to the bar.
 
-        On a narrow viewport the sidebar starts collapsed by default
-        (chat-first mobile layout). The toggle must remain visible and
-        tappable inside that bar so the sidebar can be expanded, and
-        clicking it again collapses it back to the bar.
+        On a narrow viewport the sidebar opens expanded by default so the
+        connection, model, and settings panels are immediately reachable
+        (regression: it used to start as a collapsed 56px bar with every
+        panel hidden). The toggle remains visible and tappable: collapsing
+        produces the 56px bar, expanding restores the full panel.
         """
         self.page.set_viewport_size({"width": 352, "height": 1063})
         self._navigate()
@@ -949,19 +950,52 @@ class TestScreenshot(unittest.TestCase):
                 "Collapsed toggle should have aria-expanded=false"
             )
 
-        # Collapsed by default on mobile (no persisted user choice)
+        # Expanded by default on mobile (no persisted user choice)
+        self.assertFalse(
+            self.page.evaluate(
+                "document.getElementById('sidebar').classList.contains('collapsed')"
+            ),
+            "Sidebar must start expanded on mobile so the panels are reachable"
+        )
+        self.assertGreater(
+            self.page.evaluate(
+                "document.getElementById('sidebar').getBoundingClientRect().height"
+            ),
+            60,
+            "Mobile sidebar must be taller than the 56px bar by default"
+        )
+        self.assertEqual(
+            self.page.evaluate(
+                "document.getElementById('sidebarToggle').querySelector('span:first-child').textContent"
+            ),
+            "Hide sidebar",
+            "Expanded toggle should be labeled 'Hide sidebar'"
+        )
+        self.assertEqual(
+            self.page.evaluate(
+                "document.getElementById('sidebarToggle').getAttribute('aria-expanded')"
+            ),
+            "true",
+            "Expanded toggle should have aria-expanded=true"
+        )
+
+        self._assert_screenshot_png(self._screenshot("28_mobile_sidebar_expanded"), 352, 1063)
+
+        # Collapse to the bar via the toggle
+        self.page.click("#sidebarToggle")
+        self.page.wait_for_timeout(500)
+
         self.assertTrue(
             self.page.evaluate(
                 "document.getElementById('sidebar').classList.contains('collapsed')"
             ),
-            "Sidebar should be collapsed by default on mobile"
+            "Sidebar should collapse to the bar when the toggle is clicked"
         )
-
         assert_bar_geometry(self.page.evaluate(bar_geometry_js))
 
-        self._assert_screenshot_png(self._screenshot("28_mobile_sidebar_collapsed"), 352, 1063)
+        self._assert_screenshot_png(self._screenshot("28a_mobile_sidebar_collapsed"), 352, 1063)
 
-        # Expand via the toggle
+        # Expand again via the same toggle
         self.page.click("#sidebarToggle")
         self.page.wait_for_timeout(500)
 
@@ -969,7 +1003,7 @@ class TestScreenshot(unittest.TestCase):
             self.page.evaluate(
                 "document.getElementById('sidebar').classList.contains('collapsed')"
             ),
-            "Sidebar should expand when the collapsed toggle is clicked"
+            "Sidebar should expand when the toggle is clicked again"
         )
         self.assertGreater(
             self.page.evaluate(
@@ -993,19 +1027,186 @@ class TestScreenshot(unittest.TestCase):
             "Expanded toggle should have aria-expanded=true"
         )
 
-        # Collapse again via the same toggle
-        self.page.click("#sidebarToggle")
-        self.page.wait_for_timeout(500)
-
-        self.assertTrue(
-            self.page.evaluate(
-                "document.getElementById('sidebar').classList.contains('collapsed')"
-            ),
-            "Sidebar should re-collapse when the toggle is clicked again"
-        )
-        assert_bar_geometry(self.page.evaluate(bar_geometry_js))
-
         self._assert_screenshot_png(self._screenshot("29_mobile_sidebar_restored"), 352, 1063)
+
+    # --- Mobile panel visibility (regression: panels hidden on mobile) ---
+
+    # Strict visibility: non-zero box, no opacity:0 / visibility:hidden
+    # ancestor, and (mode "full", default) fully inside every scroll
+    # container along the ancestor chain — most importantly the sidebar's
+    # own .sidebar-scroll. The scrollport clip is what catches the fold
+    # bug: an element can be inside the window yet hidden below the scroll
+    # area's visible bottom, and Playwright's is_visible() is blind to both
+    # cases (it also ignores opacity:0 ancestors, which the collapsed
+    # sidebar used for its hidden content). Mode "rendered" only checks
+    # the hidden-ancestor/size part, for elements that legitimately sit
+    # below the fold of an open panel (e.g. the theme select on a short
+    # phone) and are exercised through real interaction instead.
+    _STRICT_VISIBLE_JS = """(payload) => {
+        const sel = payload[0];
+        const mode = payload[1];
+        const el = document.querySelector(sel);
+        if (!el) return { ok: false, why: 'element missing' };
+        let r = el.getBoundingClientRect();
+        if (r.width < 2 || r.height < 2) return { ok: false, why: 'zero-size box' };
+        for (let node = el; node; node = node.parentElement) {
+            const cs = getComputedStyle(node);
+            if (cs.visibility === 'hidden' || parseFloat(cs.opacity) === 0)
+                return { ok: false, why: 'hidden ancestor ' +
+                           (node.id || node.className || node.tagName) };
+        }
+        if (mode === 'rendered') return { ok: true, fullyInViewport: false };
+        let clippedBy = null;
+        for (let node = el.parentElement; node; node = node.parentElement) {
+            const cs = getComputedStyle(node);
+            if (cs.overflowY === 'auto' || cs.overflowY === 'scroll') {
+                const c = node.getBoundingClientRect();
+                // Sub-pixel grace: scrollIntoView aligns to fractional
+                // positions, which can leave a <1px sliver that resolves
+                // to the element itself (elementFromPoint); only treat
+                // clipping as real once it actually hides the element.
+                const hiddenAbove = Math.max(c.top - r.top, 0);
+                const hiddenBelow = Math.max(r.bottom - c.bottom, 0);
+                if (hiddenAbove + hiddenBelow <= 1) continue;
+                const top = Math.max(r.top, c.top);
+                const bottom = Math.min(r.bottom, c.bottom);
+                if (top >= bottom)
+                    return { ok: false, why: 'clipped by scrollport ' +
+                               (node.id || node.className || node.tagName) };
+                clippedBy = node.id || node.className || node.tagName;
+                r.top = top;
+                r.bottom = bottom;
+            }
+        }
+        const fullyInViewport = !clippedBy &&
+            r.top >= 0 && r.left >= 0 &&
+            r.bottom <= window.innerHeight &&
+            r.right <= window.innerWidth;
+        return { ok: true, fullyInViewport, clippedBy };
+    }"""
+
+    def test_mobile_panels_visible_on_load(self):
+        """Mobile/small devices: model, system-prompt, and theme panels reachable.
+
+        Regression: on ≤900px viewports the sidebar used to start collapsed
+        into a 56px bar, hiding the model list, system prompt, and theme
+        (template) controls — after connecting, a mobile user could do
+        nothing. Now the sidebar opens expanded and, on a fresh load:
+          * the Connection and Models panels are fully in the viewport and
+            models are selectable (checked at phone, short-phone, and
+            tablet-portrait sizes);
+          * opening Settings brings the system prompt into view;
+          * the theme/template selector works from the small viewport.
+        The 375x667 viewport is the short-phone case: 65vh of the sidebar
+        would leave the model list below the panel's fold, so this size
+        also exercises the short-device cap and the auto-reveal of the
+        rendered model list.
+        """
+        for width, height in ((352, 1063), (820, 1180), (375, 667)):
+            self.page.set_viewport_size({"width": width, "height": height})
+            self._navigate()
+
+            # The sidebar opens expanded on small viewports
+            self.assertFalse(
+                self.page.evaluate(
+                    "document.getElementById('sidebar').classList.contains('collapsed')"
+                ),
+                f"Sidebar must be expanded by default at {width}x{height}"
+            )
+
+            # Connection panel is strictly visible and fully in the viewport
+            for sel in ("#endpoint", "#connectBtn"):
+                vis = self.page.evaluate(self._STRICT_VISIBLE_JS, [sel])
+                self.assertTrue(vis["ok"], f"{sel} must be strictly visible: {vis}")
+                self.assertTrue(
+                    vis["fullyInViewport"],
+                    f"{sel} must be fully in view: {vis}"
+                )
+
+            # Models panel: the action buttons are fully in view without any
+            # interaction. The list container itself only needs to be
+            # reachable on a fresh load (its empty-state height varies by
+            # device and may dip below the fold) — the strong guarantee, a
+            # rendered model row fully in view, is asserted after injection
+            # below.
+            for sel in ("#refreshModelsBtn", "#loadModelBtn", "#unloadModelBtn"):
+                vis = self.page.evaluate(self._STRICT_VISIBLE_JS, [sel])
+                self.assertTrue(vis["ok"], f"{sel} must be strictly visible: {vis}")
+                self.assertTrue(
+                    vis["fullyInViewport"],
+                    f"{sel} must be fully in view: {vis}"
+                )
+            vis = self.page.evaluate(self._STRICT_VISIBLE_JS, ["#modelList"])
+            self.assertTrue(vis["ok"], f"#modelList must be reachable: {vis}")
+
+            # Simulate a successful connect + model refresh (same injection
+            # pattern as test_model_select_and_load_interactive)
+            self._eval_with_dom(
+                """
+                    const stateMod = await import('/static/js/state.js');
+                    const modelMod = await import('/static/js/models.js');
+                    stateMod.state.connected = true;
+                    stateMod.state.models = [
+                        { key: 'test-model', type: 'llm', display_name: 'test-model', loaded_instances: [] },
+                        { key: 'second-model', type: 'llm', display_name: 'second-model', loaded_instances: [] },
+                    ];
+                    stateMod.state.isLmStudioEndpoint = true;
+                    modelMod.renderModelList(dom);
+                """
+            )
+            self.page.wait_for_selector(".model-item", timeout=10000)
+
+            # A rendered model must be fully in view (either by the sidebar
+            # cap or by auto-revealing the list) and selectable
+            vis = self.page.evaluate(self._STRICT_VISIBLE_JS, [".model-item"])
+            self.assertTrue(vis["ok"], f"model item must be strictly visible: {vis}")
+            self.assertTrue(
+                vis["fullyInViewport"],
+                f"model item must be fully in view at {width}x{height}: {vis}"
+            )
+            self.page.click(".model-item")
+            self.page.wait_for_timeout(300)
+            self.assertTrue(
+                self.page.locator(".model-item.selected").is_visible(),
+                "Model must be selectable on mobile"
+            )
+
+            # Opening Settings must bring the system prompt into view
+            self.page.click("#settingsToggle")
+            self.page.wait_for_selector("#settingsPanel.open", timeout=5000)
+            self.page.wait_for_timeout(300)
+            vis = self.page.evaluate(self._STRICT_VISIBLE_JS, ["#systemPrompt"])
+            self.assertTrue(
+                vis["ok"], f"#systemPrompt must be strictly visible: {vis}"
+            )
+            self.assertTrue(
+                vis["fullyInViewport"],
+                f"#systemPrompt must be fully in view after opening settings: {vis}"
+            )
+
+            # The theme (template) selector works from the small viewport.
+            # On short phones it legitimately sits below the fold of the
+            # open settings panel, so assert it is rendered (no hidden
+            # ancestor) and then exercise it through a real interaction.
+            vis = self.page.evaluate(self._STRICT_VISIBLE_JS, ["#themeSelect", "rendered"])
+            self.assertTrue(vis["ok"], f"#themeSelect must be rendered: {vis}")
+            self.page.select_option("#themeSelect", "light")
+            self.page.wait_for_timeout(300)
+            href = self.page.evaluate(
+                "document.getElementById('theme-stylesheet').href"
+            )
+            self.assertIn(
+                "theme-light.css", href,
+                "Theme switcher must work from the mobile viewport"
+            )
+            # Restore the default theme so the next viewport iteration
+            # starts from the same state
+            self.page.select_option("#themeSelect", "cyberpunk")
+
+            self._assert_screenshot_png(
+                self._screenshot(f"36_mobile_panels_{width}x{height}"),
+                width, height
+            )
 
     # --- Cancellation (stop button) interactive tests ---
 
@@ -2006,10 +2207,11 @@ class TestScreenshot(unittest.TestCase):
 
         Navigates at the default 1280x720 viewport, then resizes AFTER page
         load to tablet portrait (820x1180 — below the 900px breakpoint, so
-        the chat-first mobile column layout applies, intentionally) and to
+        the stacked mobile column layout applies, intentionally) and to
         mobile (352x1063 — also below the breakpoint). At each stage the
-        layout must reflow without horizontal overflow and the screenshot
-        must be a valid PNG of the exact viewport size.
+        layout must reflow without horizontal overflow, the sidebar (and
+        with it the model panel) stays reachable, and the screenshot must
+        be a valid PNG of the exact viewport size.
         """
         self._navigate()  # default viewport 1280x720
 
@@ -2033,13 +2235,19 @@ class TestScreenshot(unittest.TestCase):
         )
 
         # Stage 2: tablet portrait (820x1180) — below the 900px breakpoint,
-        # so tablet portrait intentionally gets the chat-first mobile column
-        # layout (sidebar collapsed to the bar by default).
+        # so tablet portrait intentionally gets the stacked mobile column
+        # layout (sidebar expanded above the chat by default).
         self.page.set_viewport_size({"width": 820, "height": 1180})
         self.page.wait_for_timeout(300)
         self.assertTrue(
             self.page.locator("#chatInput").is_visible(),
             "Chat input must stay visible at tablet width",
+        )
+        self.assertFalse(
+            self.page.evaluate(
+                "document.getElementById('sidebar').classList.contains('collapsed')"
+            ),
+            "Sidebar must stay expanded at tablet width (panels reachable)",
         )
         self.assertTrue(
             self.page.evaluate(
@@ -2062,6 +2270,23 @@ class TestScreenshot(unittest.TestCase):
         self.assertTrue(
             self.page.locator("#chatInput").is_visible(),
             "Chat input must remain usable on mobile",
+        )
+        self.assertFalse(
+            self.page.evaluate(
+                "document.getElementById('sidebar').classList.contains('collapsed')"
+            ),
+            "Sidebar must stay expanded at mobile width (panels reachable)",
+        )
+        self.assertTrue(
+            self.page.evaluate(
+                "() => {\n"
+                "    const el = document.getElementById('modelList');\n"
+                "    const r = el.getBoundingClientRect();\n"
+                "    return r.width >= 2 && r.height >= 2 &&\n"
+                "           r.top < window.innerHeight && r.bottom > 0;\n"
+                "}"
+            ),
+            "Model list must be reachable in the viewport on mobile",
         )
         self.assertTrue(
             self.page.evaluate(

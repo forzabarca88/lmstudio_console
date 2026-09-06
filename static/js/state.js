@@ -162,6 +162,15 @@ function persistHistory() {
 }
 
 
+/* ═══════════════════════════════════════════
+   MOBILE BREAKPOINT
+   ═══════════════════════════════════════════ */
+// Single source of truth for the mobile breakpoint used by matchMedia()
+// — must stay in sync with the CSS media-query breakpoints
+// (max-width: 900px / min-width: 901px) in static/css/base.css and the
+// theme files. Imported by app.js and models.js.
+export const MOBILE_QUERY = "(max-width: 900px)";
+
 export const state = {
     endpoint: "http://localhost:1234",
     apiToken: "",
@@ -195,9 +204,8 @@ export const state = {
     abortReason: null,
     // Theme
     theme: "cyberpunk",
-    // Sidebar collapse: null = user has never toggled (the mobile
-    // default-collapsed logic in app.js depends on null); only an explicit
-    // toggle click ever sets it.
+    // Sidebar collapse: null = user has never toggled (default: expanded on
+    // every viewport); only an explicit toggle click ever sets it.
     sidebarCollapsed: null,
     // Agentic tools
     toolCallEnabled: false,
