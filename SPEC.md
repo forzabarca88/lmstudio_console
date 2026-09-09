@@ -37,8 +37,9 @@ The interface must be modern and responsive, with striking design.
 - Implement chat functionality with any OpenAI compatible endpoint - models should be populated based on API models list response.
 - Render messages in Markdown.
 - User should be able to input multi-line messages using SHIFT + ENTER for newline.
-- Allow tweaking of System Prompt and Temperature for chat.
+- Allow tweaking of System Prompt and Temperature for chat. User should be able to unset them (should be the default option in the app) in order to chat with the defaults set by the server.
 - Save last used details (e.g. endpoint, model, system prompt, etc) if the user closes the browser.
+- Allow creation of named `Profiles` where the user can easily save/load details (e.g. endpoint, model, system prompt, etc) - they should be able to delete or modify any existing profiles as well. 
 - Trace logging of all requests shown on the server side console.
 - A collapsable section in the UI which also displays the live trace logging of the application to the user if expanded.
 - Show metrics for the current chat such as tokens per seconds, time taken for first token, and total tokens.
