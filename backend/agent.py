@@ -297,7 +297,7 @@ class ChatAgent:
         self,
         model: str,
         messages: list[dict],
-        temperature: float = 0.7,
+        temperature: float | None = None,
         system_prompt: str = "",
         tool_call_enabled: bool = False,
         cancel_event: asyncio.Event | None = None,
@@ -313,7 +313,7 @@ class ChatAgent:
         Args:
             model: Model name to use.
             messages: OpenAI-compatible messages list.
-            temperature: Sampling temperature.
+            temperature: Sampling temperature (None = use server default).
             system_prompt: System prompt (prepended to messages).
             tool_call_enabled: Whether to enable tool calls.
             cancel_event: Optional asyncio.Event; when set during streaming,
@@ -353,8 +353,15 @@ class ChatAgent:
         # Build model for this request
         model_obj = OpenAIChatModel(model, provider=self._provider)
 
-        # Build model settings
-        model_settings = ModelSettings(temperature=temperature)
+        # Build model settings. When temperature is None (unset → server
+        # default) pass an *empty* ModelSettings so the outgoing OpenAI
+        # request body omits the temperature field entirely — an explicit
+        # `"temperature": null` is what a `ModelSettings(temperature=None)`
+        # would serialize, and stricter OpenAI-compatible gateways reject it.
+        model_settings = (
+            ModelSettings(temperature=temperature) if temperature is not None
+            else ModelSettings()
+        )
 
         # Create per-request agent
         # If tools are enabled, inherit toolsets from the shared tools agent

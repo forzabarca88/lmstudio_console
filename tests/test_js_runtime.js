@@ -78,6 +78,56 @@ const historyModule = new Function("stateModule", "uiModule", `
     return { renderHistoryList, continueSession, deleteSession };
 `)(stateModule, uiModule);
 
+// profiles.js is loaded the same way: transform imports to use the
+// already-loaded state/ui modules, stub renderModelList /
+// enableChatControls/disconnect (with global counters so tests can assert
+// which connection path loadProfile took — the disconnect stub also
+// mirrors the real connection.js disconnect() STATE resets so tests see
+// the same state teardown the browser would), and wrap showToast to
+// capture the toasts it shows (delegating to the real implementation).
+const profilesSource = readFileSync(join(staticDir, "profiles.js"), "utf-8");
+
+const transformedProfiles = profilesSource
+    .replace(
+        /import\s*{\s*state,\s*saveSettings,\s*saveProfiles\s*}\s*from\s*"\.\/state\.js";?/,
+        'const { state, saveSettings, saveProfiles } = stateModule;'
+    )
+    .replace(
+        /import\s*{\s*showToast\s*}\s*from\s*"\.\/ui\.js";?/,
+        'const { showToast: _showToastReal } = uiModule; '
+        + 'const showToast = (message, type) => { '
+        + 'globalThis._profileToasts = globalThis._profileToasts || []; '
+        + 'globalThis._profileToasts.push({ message, type: type || "info" }); '
+        + '_showToastReal(message, type); '
+        + '};'
+    )
+    .replace(
+        /import\s*{\s*renderModelList\s*}\s*from\s*"\.\/models\.js";?/,
+        'const renderModelList = () => { globalThis._profileModelListCalls = (globalThis._profileModelListCalls || 0) + 1; };'
+    )
+    .replace(
+        /import\s*{\s*enableChatControls,\s*disconnect\s*}\s*from\s*"\.\/connection\.js";?/,
+        'const enableChatControls = () => { globalThis._profileEnableChatCalls = (globalThis._profileEnableChatCalls || 0) + 1; }; '
+        + 'const disconnect = () => { '
+        + 'globalThis._profileDisconnectCalls = (globalThis._profileDisconnectCalls || 0) + 1; '
+        // Mirror the STATE resets of the real connection.js disconnect()
+        // (DOM side effects are not needed in Node).
+        + 'state.connected = false; '
+        + 'state.status = "disconnected"; '
+        + 'state.models = []; '
+        + 'state.loadedModels.clear(); '
+        + 'state.selectedModel = null; '
+        + 'state.isLmStudioEndpoint = false; '
+        + '};'
+    )
+    .replace(/export\s+function/g, 'function');
+
+const profilesModule = new Function("stateModule", "uiModule", `
+    "use strict";
+    ${transformedProfiles}
+    return { renderProfileList, saveProfile, loadProfile, deleteProfile };
+`)(stateModule, uiModule);
+
 // Mock browser globals for Node.js
 globalThis.localStorage = {
     _data: {},
@@ -220,8 +270,8 @@ await runTest("state exists with defaults", () => {
     const s = stateModule.state;
     assert.equal(s.endpoint, "http://localhost:1234");
     assert.equal(s.connected, false);
-    assert.equal(s.systemPrompt, "You are a helpful assistant.");
-    assert.equal(s.temperature, 0.7);
+    assert.equal(s.systemPrompt, "", "systemPrompt defaults to unset (empty string)");
+    assert.equal(s.temperature, null, "temperature defaults to unset (null)");
     assert.deepEqual(s.metrics, { tokensPerSecond: 0, timeToFirstToken: null, totalTokens: 0 });
     assert.equal(s.toolCallEnabled, false);
     assert.deepEqual(s.attachments, []);
@@ -301,8 +351,8 @@ await runTest("loadSettings restores from localStorage", () => {
 
     // Reset state
     stateModule.state.endpoint = "http://localhost:1234";
-    stateModule.state.systemPrompt = "You are a helpful assistant.";
-    stateModule.state.temperature = 0.7;
+    stateModule.state.systemPrompt = "";
+    stateModule.state.temperature = null;
     stateModule.state.toolCallEnabled = false;
     stateModule.state.selectedModel = null;
     stateModule.state.sidebarCollapsed = null;
@@ -310,8 +360,10 @@ await runTest("loadSettings restores from localStorage", () => {
     const dom = {
         endpoint: { value: "" },
         apiToken: { value: "" },
-        systemPrompt: { value: "" },
-        temperature: { value: "" },
+        systemPrompt: { value: "", disabled: false },
+        systemPromptUnset: { checked: false },
+        temperature: { value: "", disabled: false },
+        temperatureUnset: { checked: false },
         temperatureValue: { textContent: "" },
         toolCallToggle: { checked: false },
         // classList is a no-op in the mock — assert on state, not classes
@@ -325,6 +377,62 @@ await runTest("loadSettings restores from localStorage", () => {
     assert.equal(stateModule.state.temperature, 0.3);
     assert.equal(stateModule.state.toolCallEnabled, true);
     assert.equal(stateModule.state.sidebarCollapsed, false);
+    // Set values restore the controls as enabled (unset checkboxes off)
+    assert.equal(dom.systemPrompt.value, "Restored prompt");
+    assert.equal(dom.systemPromptUnset.checked, false);
+    assert.equal(dom.systemPrompt.disabled, false);
+    assert.equal(dom.temperature.value, 0.3);
+    assert.equal(dom.temperatureValue.textContent, "0.30");
+    assert.equal(dom.temperatureUnset.checked, false);
+    assert.equal(dom.temperature.disabled, false);
+});
+
+await runTest("saveSettings persists unset systemPrompt and temperature", () => {
+    globalThis.localStorage.clear();
+    stateModule.state.systemPrompt = "";
+    stateModule.state.temperature = null;
+
+    stateModule.saveSettings();
+
+    const saved = JSON.parse(globalThis.localStorage.getItem("lm_console_settings"));
+    assert.ok("systemPrompt" in saved, "systemPrompt key must be present (empty string, not dropped)");
+    assert.ok("temperature" in saved, "temperature key must be present (null, not dropped)");
+    assert.equal(saved.systemPrompt, "");
+    assert.equal(saved.temperature, null);
+});
+
+await runTest("loadSettings with stored unset values restores unset state and disabled controls", () => {
+    globalThis.localStorage.clear();
+    globalThis.localStorage.setItem("lm_console_settings", JSON.stringify({
+        endpoint: "http://localhost:1234",
+        systemPrompt: "",
+        temperature: null,
+    }));
+
+    // Reset state to set values
+    stateModule.state.systemPrompt = "Custom prompt";
+    stateModule.state.temperature = 0.9;
+
+    const dom = {
+        endpoint: { value: "" },
+        apiToken: { value: "" },
+        systemPrompt: { value: "Custom prompt", disabled: false },
+        systemPromptUnset: { checked: false },
+        temperature: { value: "0.9", disabled: false },
+        temperatureUnset: { checked: false },
+        temperatureValue: { textContent: "0.90" },
+        toolCallToggle: { checked: false },
+    };
+    stateModule.loadSettings(dom);
+
+    assert.equal(stateModule.state.systemPrompt, "");
+    assert.equal(stateModule.state.temperature, null);
+    assert.equal(dom.systemPrompt.value, "");
+    assert.equal(dom.systemPromptUnset.checked, true, "prompt unset checkbox checked");
+    assert.equal(dom.systemPrompt.disabled, true, "prompt textarea disabled");
+    assert.equal(dom.temperatureUnset.checked, true, "temperature unset checkbox checked");
+    assert.equal(dom.temperature.disabled, true, "temperature slider disabled");
+    assert.equal(dom.temperatureValue.textContent, "—");
 });
 
 await runTest("saveCurrentSession handles multimodal content", () => {
@@ -712,18 +820,33 @@ await runTest("loadSettings restores theme from localStorage", () => {
     }));
 
     stateModule.state.theme = "cyberpunk";
+    stateModule.state.systemPrompt = "";
+    stateModule.state.temperature = null;
 
     const dom = {
         endpoint: { value: "" },
         apiToken: { value: "" },
-        systemPrompt: { value: "" },
-        temperature: { value: "" },
-        temperatureValue: { textContent: "" },
+        systemPrompt: { value: "", disabled: true },
+        systemPromptUnset: { checked: true },
+        temperature: { value: "", disabled: true },
+        temperatureUnset: { checked: true },
+        temperatureValue: { textContent: "—" },
         toolCallToggle: { checked: false },
     };
     stateModule.loadSettings(dom);
 
     assert.equal(stateModule.state.theme, "light");
+    // Legacy stored values are kept as user data (no migration): the old
+    // default prompt / 0.7 restore as custom (enabled) settings.
+    assert.equal(stateModule.state.systemPrompt, "You are a helpful assistant.");
+    assert.equal(dom.systemPrompt.value, "You are a helpful assistant.");
+    assert.equal(dom.systemPromptUnset.checked, false);
+    assert.equal(dom.systemPrompt.disabled, false);
+    assert.equal(stateModule.state.temperature, 0.7);
+    assert.equal(dom.temperature.value, 0.7);
+    assert.equal(dom.temperatureValue.textContent, "0.70");
+    assert.equal(dom.temperatureUnset.checked, false);
+    assert.equal(dom.temperature.disabled, false);
 });
 
 // ─── Abort/cancellation tests (abortActiveRequest) ─────────────
@@ -1042,6 +1165,410 @@ await runTest("deleteSession shows error for unknown session", () => {
     assert.equal(stateModule.state.currentSessionId, "current-id");
     const history = JSON.parse(globalThis.localStorage.getItem("lm_console_history"));
     assert.equal(history.length, 1);
+});
+
+// ─── Profiles tests (renderProfileList, saveProfile, loadProfile,
+// ─── deleteProfile) ─────────────────────────────────────────────
+
+console.log("\nProfiles:");
+
+// Mock DOM for profiles.js operations
+function _createProfileDom() {
+    return {
+        profileName: { value: "" },
+        profileList: {
+            innerHTML: "",
+            querySelectorAll() { return []; },
+            addEventListener() {},
+        },
+        endpoint: { value: "" },
+        apiToken: { value: "" },
+        systemPrompt: { value: "", disabled: false },
+        systemPromptUnset: { checked: false },
+        temperature: { value: "", disabled: false },
+        temperatureUnset: { checked: false },
+        temperatureValue: { textContent: "" },
+        toolCallToggle: { checked: false },
+    };
+}
+
+await runTest("state.profiles defaults to []", () => {
+    assert.deepEqual(stateModule.state.profiles, [], "fresh state has no profiles");
+});
+
+await runTest("loadProfiles filters malformed stored entries", () => {
+    globalThis.localStorage.clear();
+    stateModule.state.profiles = [{ name: "stale" }];
+    globalThis.localStorage.setItem("lm_console_profiles", JSON.stringify([
+        { name: "good", endpoint: "http://good:1234" },
+        { name: "   " },           // whitespace-only name
+        { name: 42 },              // non-string name
+        "not-an-object",
+        null,
+        42,
+    ]));
+
+    stateModule.loadProfiles();
+
+    assert.equal(stateModule.state.profiles.length, 1, "only the valid entry survives");
+    assert.equal(stateModule.state.profiles[0].name, "good");
+    assert.equal(stateModule.state.profiles[0].endpoint, "http://good:1234");
+});
+
+await runTest("loadProfiles resets to [] on corrupt or non-array JSON", () => {
+    globalThis.localStorage.clear();
+    stateModule.state.profiles = [{ name: "stale" }];
+    globalThis.localStorage.setItem("lm_console_profiles", "{not valid json");
+    stateModule.loadProfiles();
+    assert.deepEqual(stateModule.state.profiles, [], "corrupt JSON yields empty list");
+
+    globalThis.localStorage.setItem("lm_console_profiles", JSON.stringify({ name: "not-an-array" }));
+    stateModule.loadProfiles();
+    assert.deepEqual(stateModule.state.profiles, [], "non-array JSON yields empty list");
+});
+
+await runTest("saveProfile creates a profile and persists it", () => {
+    globalThis.localStorage.clear();
+    stateModule.state.profiles = [];
+    stateModule.state.endpoint = "http://profile-endpoint:1234";
+    stateModule.state.apiToken = "tok-123";
+    stateModule.state.selectedModel = "model-p";
+    stateModule.state.systemPrompt = "Profile prompt";
+    stateModule.state.temperature = 1.1;
+    stateModule.state.toolCallEnabled = true;
+
+    const dom = _createProfileDom();
+    dom.profileName.value = "  work-profile  "; // trimmed on save
+    profilesModule.saveProfile(dom);
+
+    assert.equal(stateModule.state.profiles.length, 1);
+    const p = stateModule.state.profiles[0];
+    assert.equal(p.name, "work-profile");
+    assert.equal(p.endpoint, "http://profile-endpoint:1234");
+    assert.equal(p.apiToken, "tok-123");
+    assert.equal(p.selectedModel, "model-p");
+    assert.equal(p.systemPrompt, "Profile prompt");
+    assert.equal(p.temperature, 1.1);
+    assert.equal(p.toolCallEnabled, true);
+    assert.ok(p.savedAt, "savedAt timestamp recorded");
+
+    // Round-trips through localStorage
+    const stored = JSON.parse(globalThis.localStorage.getItem("lm_console_profiles"));
+    assert.equal(stored.length, 1);
+    assert.equal(stored[0].name, "work-profile");
+    assert.equal(stored[0].endpoint, "http://profile-endpoint:1234");
+});
+
+await runTest("saveProfile with same name modifies in place (still one entry)", () => {
+    // "work-profile" exists from the previous test
+    assert.equal(stateModule.state.profiles.length, 1);
+
+    stateModule.state.endpoint = "http://changed-endpoint:9999";
+    stateModule.state.temperature = 0.25;
+
+    const dom = _createProfileDom();
+    dom.profileName.value = "work-profile";
+    profilesModule.saveProfile(dom);
+
+    assert.equal(stateModule.state.profiles.length, 1, "same name must not create a second entry");
+    assert.equal(stateModule.state.profiles[0].name, "work-profile");
+    assert.equal(stateModule.state.profiles[0].endpoint, "http://changed-endpoint:9999", "updated endpoint");
+    assert.equal(stateModule.state.profiles[0].temperature, 0.25, "updated temperature");
+    assert.equal(stateModule.state.profiles[0].apiToken, "tok-123", "untouched field kept");
+
+    const stored = JSON.parse(globalThis.localStorage.getItem("lm_console_profiles"));
+    assert.equal(stored.length, 1, "storage holds one entry after modify");
+    assert.equal(stored[0].endpoint, "http://changed-endpoint:9999");
+});
+
+await runTest("saveProfile rejects an empty name", () => {
+    const before = stateModule.state.profiles.length;
+    const dom = _createProfileDom();
+    dom.profileName.value = "   ";
+    profilesModule.saveProfile(dom);
+    assert.equal(stateModule.state.profiles.length, before, "no profile added for blank name");
+});
+
+await runTest("deleteProfile removes the profile and persists", () => {
+    const dom = _createProfileDom();
+    profilesModule.deleteProfile(dom, "work-profile");
+
+    assert.equal(stateModule.state.profiles.length, 0);
+    const stored = JSON.parse(globalThis.localStorage.getItem("lm_console_profiles"));
+    assert.equal(stored.length, 0, "storage empty after delete");
+
+    // Deleting an unknown profile is a no-op
+    profilesModule.deleteProfile(dom, "no-such-profile");
+    assert.equal(stateModule.state.profiles.length, 0);
+});
+
+await runTest("loadProfile applies set values to state and DOM controls", () => {
+    globalThis.localStorage.clear();
+    stateModule.state.profiles = [{
+        name: "load-me",
+        endpoint: "http://load-endpoint:4321",
+        apiToken: "tok-456",
+        selectedModel: "model-l",
+        systemPrompt: "Load prompt",
+        temperature: 1.25,
+        toolCallEnabled: true,
+        savedAt: new Date().toISOString(),
+    }];
+    // Reset state to different values to prove the profile overrides them
+    stateModule.state.endpoint = "http://localhost:1234";
+    stateModule.state.apiToken = "";
+    stateModule.state.selectedModel = null;
+    stateModule.state.systemPrompt = "";
+    stateModule.state.temperature = null;
+    stateModule.state.toolCallEnabled = false;
+    stateModule.state.connected = false;
+
+    const dom = _createProfileDom();
+    profilesModule.loadProfile(dom, "load-me");
+
+    // State
+    assert.equal(stateModule.state.endpoint, "http://load-endpoint:4321");
+    assert.equal(stateModule.state.apiToken, "tok-456");
+    assert.equal(stateModule.state.selectedModel, "model-l");
+    assert.equal(stateModule.state.systemPrompt, "Load prompt");
+    assert.equal(stateModule.state.temperature, 1.25);
+    assert.equal(stateModule.state.toolCallEnabled, true);
+    // DOM controls — set values: unset checkboxes off, controls enabled
+    assert.equal(dom.endpoint.value, "http://load-endpoint:4321");
+    assert.equal(dom.apiToken.value, "tok-456");
+    assert.equal(dom.systemPrompt.value, "Load prompt");
+    assert.equal(dom.systemPromptUnset.checked, false);
+    assert.equal(dom.systemPrompt.disabled, false);
+    assert.equal(dom.temperature.value, 1.25);
+    assert.equal(dom.temperatureValue.textContent, "1.25");
+    assert.equal(dom.temperatureUnset.checked, false);
+    assert.equal(dom.temperature.disabled, false);
+    assert.equal(dom.toolCallToggle.checked, true);
+    // Settings persisted
+    const saved = JSON.parse(globalThis.localStorage.getItem("lm_console_settings"));
+    assert.equal(saved.systemPrompt, "Load prompt");
+    assert.equal(saved.temperature, 1.25);
+    assert.equal(saved.endpoint, "http://load-endpoint:4321");
+    stateModule.state.connected = false;
+});
+
+await runTest("loadProfile with unset prompt/temperature checks the server-default toggles", () => {
+    globalThis.localStorage.clear();
+    stateModule.state.profiles = [{
+        name: "unset-profile",
+        endpoint: "http://unset:1234",
+        apiToken: "",
+        selectedModel: null,
+        systemPrompt: "",
+        temperature: null,
+        toolCallEnabled: false,
+        savedAt: new Date().toISOString(),
+    }];
+
+    const dom = _createProfileDom();
+    profilesModule.loadProfile(dom, "unset-profile");
+
+    assert.equal(stateModule.state.systemPrompt, "");
+    assert.equal(stateModule.state.temperature, null);
+    assert.equal(dom.systemPrompt.value, "");
+    assert.equal(dom.systemPromptUnset.checked, true, "prompt unset checkbox checked");
+    assert.equal(dom.systemPrompt.disabled, true, "prompt textarea disabled");
+    assert.equal(dom.temperatureUnset.checked, true, "temperature unset checkbox checked");
+    assert.equal(dom.temperature.disabled, true, "temperature slider disabled");
+    assert.equal(dom.temperatureValue.textContent, "—", "value span shows em dash");
+    assert.equal(dom.toolCallToggle.checked, false);
+});
+
+await runTest("loadProfile refreshes model list + chat controls when connected + endpoint unchanged", () => {
+    globalThis.localStorage.clear();
+    stateModule.state.profiles = [{
+        name: "conn-profile",
+        endpoint: "http://conn:1234",
+        apiToken: "",
+        selectedModel: null,
+        systemPrompt: "",
+        temperature: null,
+        toolCallEnabled: false,
+        savedAt: new Date().toISOString(),
+    }];
+
+    const dom = _createProfileDom();
+
+    // Connected to the SAME endpoint/apiToken as the profile: both
+    // refreshes must run and no disconnect
+    globalThis._profileDisconnectCalls = 0;
+    globalThis._profileModelListCalls = 0;
+    globalThis._profileEnableChatCalls = 0;
+    stateModule.state.connected = true;
+    stateModule.state.endpoint = "http://conn:1234";
+    stateModule.state.apiToken = "";
+    profilesModule.loadProfile(dom, "conn-profile");
+    assert.equal(globalThis._profileDisconnectCalls, 0, "no disconnect when endpoint unchanged");
+    assert.equal(globalThis._profileModelListCalls, 1, "renderModelList called when connected");
+    assert.equal(globalThis._profileEnableChatCalls, 1, "enableChatControls called when connected");
+
+    // Disconnected: loading a profile must not touch model/chat UI or the connection
+    globalThis._profileDisconnectCalls = 0;
+    globalThis._profileModelListCalls = 0;
+    globalThis._profileEnableChatCalls = 0;
+    stateModule.state.connected = false;
+    stateModule.state.endpoint = "http://conn:1234";
+    stateModule.state.apiToken = "";
+    profilesModule.loadProfile(dom, "conn-profile");
+    assert.equal(globalThis._profileDisconnectCalls, 0, "no disconnect when already disconnected");
+    assert.equal(globalThis._profileModelListCalls, 0, "renderModelList not called when disconnected");
+    assert.equal(globalThis._profileEnableChatCalls, 0, "enableChatControls not called when disconnected");
+    stateModule.state.connected = false;
+});
+
+await runTest("loadProfile disconnects when connected and endpoint or apiToken changed", () => {
+    globalThis.localStorage.clear();
+    stateModule.state.profiles = [{
+        name: "moved-profile",
+        endpoint: "http://moved:4321",
+        apiToken: "tok-moved",
+        selectedModel: "model-moved",
+        systemPrompt: "",
+        temperature: null,
+        toolCallEnabled: false,
+        savedAt: new Date().toISOString(),
+    }];
+
+    const dom = _createProfileDom();
+
+    // Connected to a DIFFERENT endpoint: load must disconnect (the live
+    // connection is bound to the old endpoint) and prompt a reconnect —
+    // not silently refresh the old endpoint's model list.
+    globalThis._profileDisconnectCalls = 0;
+    globalThis._profileModelListCalls = 0;
+    globalThis._profileEnableChatCalls = 0;
+    globalThis._profileToasts = [];
+    stateModule.state.connected = true;
+    stateModule.state.endpoint = "http://old-host:1234";
+    stateModule.state.apiToken = "tok-old";
+    profilesModule.loadProfile(dom, "moved-profile");
+
+    assert.equal(globalThis._profileDisconnectCalls, 1, "disconnect called when endpoint changed while connected");
+    assert.equal(globalThis._profileModelListCalls, 0, "model list not refreshed after disconnect");
+    assert.equal(globalThis._profileEnableChatCalls, 0, "chat controls not refreshed after disconnect");
+    assert.ok(
+        globalThis._profileToasts.some(t => t.message === "Reconnect to apply endpoint changes" && t.type === "info"),
+        "info toast prompts the user to reconnect",
+    );
+    // The profile fields themselves are still applied to state
+    assert.equal(stateModule.state.endpoint, "http://moved:4321");
+    assert.equal(stateModule.state.apiToken, "tok-moved");
+    // disconnect() resets state.selectedModel — the profile's model must be
+    // re-applied after the teardown so the selection survives to reconnect
+    assert.equal(
+        stateModule.state.selectedModel, "model-moved",
+        "the profile's model selection must survive the disconnect() teardown",
+    );
+    stateModule.state.connected = false;
+
+    // An apiToken-only change (same endpoint) must also disconnect
+    globalThis._profileDisconnectCalls = 0;
+    globalThis._profileModelListCalls = 0;
+    globalThis._profileEnableChatCalls = 0;
+    globalThis._profileToasts = [];
+    stateModule.state.connected = true;
+    stateModule.state.endpoint = "http://moved:4321"; // same as the profile
+    stateModule.state.apiToken = "tok-stale";         // differs from the profile
+    profilesModule.loadProfile(dom, "moved-profile");
+
+    assert.equal(globalThis._profileDisconnectCalls, 1, "disconnect called when only apiToken changed");
+    assert.equal(globalThis._profileModelListCalls, 0, "model list not refreshed after disconnect (token change)");
+    assert.equal(globalThis._profileEnableChatCalls, 0, "chat controls not refreshed after disconnect (token change)");
+    assert.equal(
+        stateModule.state.selectedModel, "model-moved",
+        "the profile's model selection must survive the token-change disconnect too",
+    );
+    stateModule.state.connected = false;
+});
+
+await runTest("loadProfile nulls a stale model when connected and endpoint unchanged", () => {
+    globalThis.localStorage.clear();
+    stateModule.state.profiles = [{
+        name: "stale-model-profile",
+        endpoint: "http://stale:1234",
+        apiToken: "",
+        selectedModel: "model-gone",
+        systemPrompt: "",
+        temperature: null,
+        toolCallEnabled: false,
+        savedAt: new Date().toISOString(),
+    }];
+
+    const dom = _createProfileDom();
+
+    globalThis._profileDisconnectCalls = 0;
+    globalThis._profileModelListCalls = 0;
+    globalThis._profileEnableChatCalls = 0;
+    stateModule.state.connected = true;
+    stateModule.state.endpoint = "http://stale:1234"; // same endpoint
+    stateModule.state.apiToken = "";
+    // Live list no longer contains the profile's model (unloaded/renamed)
+    stateModule.state.models = [{ key: "model-present", display_name: "Present" }];
+    stateModule.state.selectedModel = "model-present";
+
+    profilesModule.loadProfile(dom, "stale-model-profile");
+
+    assert.equal(globalThis._profileDisconnectCalls, 0, "no disconnect when endpoint unchanged");
+    assert.equal(
+        stateModule.state.selectedModel, null,
+        "a profile model missing from the live list must be nulled",
+    );
+    assert.equal(globalThis._profileModelListCalls, 1, "model list re-rendered after the nulling");
+    assert.equal(globalThis._profileEnableChatCalls, 1, "chat controls re-evaluated with the nulled selection");
+    const saved = JSON.parse(globalThis.localStorage.getItem("lm_console_settings"));
+    assert.equal(saved.selectedModel, null, "nulled selection persisted");
+
+    // A model that IS in the live list stays selected (no over-nulling)
+    stateModule.state.models = [{ key: "model-present" }, { key: "model-kept" }];
+    stateModule.state.selectedModel = "model-kept";
+    stateModule.state.profiles = [{
+        name: "stale-model-profile",
+        endpoint: "http://stale:1234",
+        apiToken: "",
+        selectedModel: "model-kept",
+        systemPrompt: "",
+        temperature: null,
+        toolCallEnabled: false,
+        savedAt: new Date().toISOString(),
+    }];
+    globalThis._profileModelListCalls = 0;
+    globalThis._profileEnableChatCalls = 0;
+    profilesModule.loadProfile(dom, "stale-model-profile");
+    assert.equal(
+        stateModule.state.selectedModel, "model-kept",
+        "a model present in the live list must stay selected",
+    );
+    stateModule.state.connected = false;
+    stateModule.state.models = [];
+});
+
+await runTest("renderProfileList renders empty state and items without throwing", () => {
+    globalThis.localStorage.clear();
+    stateModule.state.profiles = [];
+    let dom = _createProfileDom();
+    profilesModule.renderProfileList(dom);
+    assert.ok(dom.profileList.innerHTML.includes("empty-state"), "empty state shown when no profiles");
+
+    stateModule.state.profiles = [{
+        name: "render-me",
+        endpoint: "http://render:1234",
+        apiToken: "",
+        selectedModel: "model-r",
+        systemPrompt: "",
+        temperature: null,
+        toolCallEnabled: false,
+        savedAt: new Date().toISOString(),
+    }];
+    dom = _createProfileDom();
+    profilesModule.renderProfileList(dom);
+    assert.ok(dom.profileList.innerHTML.includes("profile-item"), "profile item rendered");
+    assert.ok(dom.profileList.innerHTML.includes("load-btn"), "load button rendered");
+    assert.ok(dom.profileList.innerHTML.includes("delete-btn"), "delete button rendered");
 });
 
 // ─── Summary ────────────────────────────────────────────────────

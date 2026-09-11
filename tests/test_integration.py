@@ -444,6 +444,60 @@ class TestChatEndpoint(unittest.TestCase):
             self.assertIn('"__usage__"', content)
             self.assertIn('"prompt_tokens": 10', content)
 
+    def test_chat_temperature_and_prompt_defaults(self):
+        """ARRANGE: Mock agent that captures the chat kwargs
+        ACT: POST /api/chat with temperature absent, null, and explicit 0.5;
+        no system_prompt in any request
+        ASSERT: temperature is None when absent/null, passed through when set,
+        and system_prompt defaults to empty string"""
+        from backend.agent import ChatAgent
+
+        captured = []
+
+        with patch.object(ChatAgent, "chat") as mock_chat:
+            async def mock_chat_generator(**kwargs):
+                captured.append(kwargs)
+                yield {"content": "ok"}
+                yield {
+                    "__usage__": {
+                        "prompt_tokens": 1,
+                        "completion_tokens": 1,
+                        "total_tokens": 2,
+                    }
+                }
+
+            mock_chat.side_effect = lambda **kwargs: mock_chat_generator(**kwargs)
+
+            # No temperature key at all
+            resp1 = self.client.post("/api/chat", json={
+                "model": "test-model",
+                "messages": [{"role": "user", "content": "Hi"}],
+            })
+            self.assertEqual(resp1.status_code, 200)
+
+            # temperature explicitly null
+            resp2 = self.client.post("/api/chat", json={
+                "model": "test-model",
+                "messages": [{"role": "user", "content": "Hi"}],
+                "temperature": None,
+            })
+            self.assertEqual(resp2.status_code, 200)
+
+            # explicit temperature value
+            resp3 = self.client.post("/api/chat", json={
+                "model": "test-model",
+                "messages": [{"role": "user", "content": "Hi"}],
+                "temperature": 0.5,
+            })
+            self.assertEqual(resp3.status_code, 200)
+
+        self.assertEqual(len(captured), 3)
+        self.assertIsNone(captured[0]["temperature"])
+        self.assertIsNone(captured[1]["temperature"])
+        self.assertEqual(captured[2]["temperature"], 0.5)
+        for kwargs in captured:
+            self.assertEqual(kwargs["system_prompt"], "")
+
     def test_chat_streams_thinking_tokens(self):
         """ARRANGE: Mock Pydantic AI agent to produce thinking tokens
         ACT: POST /api/chat

@@ -750,6 +750,86 @@ class TestChatAgentStreaming(unittest.TestCase):
 
         asyncio.run(_run())
 
+    def test_unset_temperature_omits_model_setting(self):
+        """ARRANGE: ChatAgent
+        ACT: Run chat with temperature=None (unset → server default)
+        ASSERT: Agent constructed with a ModelSettings carrying NO
+        temperature key — an explicit `ModelSettings(temperature=None)`
+        would serialize as `"temperature": null` in the outgoing OpenAI
+        request body, which stricter gateways reject."""
+        agent = ChatAgent("http://localhost:1234")
+
+        async def _run():
+            with patch("backend.agent.Agent") as mock_cls:
+                mock_agent = MagicMock()
+                mock_result = MagicMock()
+                mock_result.usage = MagicMock(
+                    input_tokens=5, output_tokens=3, total_tokens=8
+                )
+
+                async def mock_events():
+                    yield PartStartEvent(index=0, part=TextPart(content="Hi"))
+                    yield AgentRunResultEvent(result=mock_result)
+
+                mock_cm = MagicMock()
+                mock_cm.__aenter__ = AsyncMock(return_value=mock_events())
+                mock_cm.__aexit__ = AsyncMock(return_value=False)
+                mock_agent.run_stream_events = MagicMock(return_value=mock_cm)
+                mock_cls.return_value = mock_agent
+
+                async for _ in agent.chat(
+                    model="test-model",
+                    messages=[{"role": "user", "content": "Hi"}],
+                    temperature=None,
+                    tool_call_enabled=False,
+                ):
+                    pass
+
+                model_settings = mock_cls.call_args.kwargs["model_settings"]
+                self.assertNotIn(
+                    "temperature", model_settings,
+                    "unset temperature must not be passed as an explicit null",
+                )
+
+        asyncio.run(_run())
+
+    def test_set_temperature_passes_model_setting(self):
+        """ARRANGE: ChatAgent
+        ACT: Run chat with temperature=0.7
+        ASSERT: Agent constructed with a ModelSettings carrying temperature=0.7"""
+        agent = ChatAgent("http://localhost:1234")
+
+        async def _run():
+            with patch("backend.agent.Agent") as mock_cls:
+                mock_agent = MagicMock()
+                mock_result = MagicMock()
+                mock_result.usage = MagicMock(
+                    input_tokens=5, output_tokens=3, total_tokens=8
+                )
+
+                async def mock_events():
+                    yield PartStartEvent(index=0, part=TextPart(content="Hi"))
+                    yield AgentRunResultEvent(result=mock_result)
+
+                mock_cm = MagicMock()
+                mock_cm.__aenter__ = AsyncMock(return_value=mock_events())
+                mock_cm.__aexit__ = AsyncMock(return_value=False)
+                mock_agent.run_stream_events = MagicMock(return_value=mock_cm)
+                mock_cls.return_value = mock_agent
+
+                async for _ in agent.chat(
+                    model="test-model",
+                    messages=[{"role": "user", "content": "Hi"}],
+                    temperature=0.7,
+                    tool_call_enabled=False,
+                ):
+                    pass
+
+                model_settings = mock_cls.call_args.kwargs["model_settings"]
+                self.assertEqual(model_settings.get("temperature"), 0.7)
+
+        asyncio.run(_run())
+
 
 if __name__ == "__main__":
     unittest.main()

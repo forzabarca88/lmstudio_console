@@ -317,10 +317,18 @@ export async function sendMessage(dom) {
     }
 
     async function awaitFinalContentRender() {
-        renderChain = renderChain
-            .then(() => renderPending ? renderContent(contentEl, assistantContent) : undefined)
-            .catch(() => {});
+        // Decide whether a final render is needed NOW: the chained callback
+        // runs later, by which point renderPending has already been reset,
+        // so reading the flag inside the callback would always be a no-op
+        // and fast streams (deltas within CONTENT_RENDER_INTERVAL_MS) would
+        // keep the stale partial render in the DOM.
+        const needsFinalRender = renderPending;
         renderPending = false;
+        if (needsFinalRender) {
+            renderChain = renderChain
+                .then(() => renderContent(contentEl, assistantContent))
+                .catch(() => {});
+        }
         await renderChain;
     }
 
@@ -590,12 +598,13 @@ export async function sendMessage(dom) {
         // server-side; do not also prepend it as a system message.
         const messages = [...state.chatMessages];
 
-        // Build chat request body
+        // Build chat request body. temperature null = use server default;
+        // system_prompt "" = no custom system prompt (guaranteed string).
         const body = {
             model: state.selectedModel,
             messages: messages,
             temperature: state.temperature,
-            system_prompt: state.systemPrompt,
+            system_prompt: state.systemPrompt || "",
             toolCallEnabled: state.toolCallEnabled,
         };
 

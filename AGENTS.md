@@ -23,7 +23,7 @@
 │   ├── logger.py            # Trace logging with shared logger, RequestTrace context, cancellation tracking, and SSE streamer integration
 │   ├── log_streamer.py      # SSE log streamer: ring buffer (500 entries), subscriber broadcast for live trace log streaming
 │   ├── proxy.py             # HTTP proxy using httpx for forwarding requests to LM Studio/OpenAI endpoints with streaming and graceful cancellation support
-│   ├── server.py            # FastAPI app with proxy routes, chat endpoint (client disconnect detection, cooperative cancellation), file upload (50MB cap), trace log SSE, CORS middleware, SSRF-safe X-LM-Studio-URL handling, and graceful shutdown (5s force-exit)
+│   ├── server.py            # FastAPI app with proxy routes, chat endpoint (client disconnect detection, cooperative cancellation, temperature null/absent = server default), file upload (50MB cap), trace log SSE, CORS middleware, SSRF-safe X-LM-Studio-URL handling, and graceful shutdown (5s force-exit)
 │   ├── agent.py             # Pydantic AI Agent wrapper for chat with automatic tool call handling (Pydantic AI internal tool loop), tool_call/tool_result SSE events, thinking tokens, message format conversion, and cooperative cancellation support
 │   ├── tools.py             # Pydantic AI tool definitions (web_search, open_web_page, run_python_code): run_python_code in a disposable isolated subprocess, web_search off the event loop, open_web_page via SSRF-validated streaming fetch with a size cap
 │   └── url_security.py      # SSRF-safe URL validation for the client-supplied proxy target (LAN ranges allowed) and outbound tool fetches (global-only), with metadata-hostname block and DNS resolution checks
@@ -36,25 +36,26 @@
 │   ├── favicon.svg          # Browser tab icon
 │   ├── js/
 │   │   ├── api.js           # API call utilities for proxy requests, streaming, and chat endpoint with optional AbortSignal forwarding
-│   │   ├── app.js           # Main entry point wiring all modules together; send button toggles between send and stop/cancel; collapsible sidebar toggle (expanded by default); opened panels scroll into view; trace log panel wiring
+│   │   ├── app.js           # Main entry point wiring all modules together (incl. profiles); send button toggles between send and stop/cancel; collapsible sidebar toggle (expanded by default); opened panels scroll into view; trace log panel wiring
 │   │   ├── chat.js          # Chat: send messages, streaming responses, thinking blocks, tool call display (executing + done/error via SSE events), metrics, file attachments (abortable), copy button, stop/cancel button with partial-content preservation
 │   │   ├── connection.js    # Connection management: connect/disconnect (aborts active requests), status updates, heartbeat monitoring
 │   │   ├── history.js       # Chat session history: render, continue (aborts active requests), delete sessions (aborts if current)
 │   │   ├── models.js        # Model management: list, refresh, load, unload models with LM Studio native API; renders model list and auto-reveals it within the mobile sidebar when it lands below the fold
-│   │   ├── state.js         # State management: localStorage persistence for settings/session history; runtime abort controller and reason tracking; theme management with applyTheme; MOBILE_QUERY breakpoint constant (single source for matchMedia callers)
+│   │   ├── profiles.js      # Named profiles: save/load/delete/modify snapshots of connection + chat settings, applied to state and the settings DOM controls
+│   │   ├── state.js         # State management: localStorage persistence for settings/session history/profiles; unset-settings convention (systemPrompt "" / temperature null = server default); runtime abort controller and reason tracking; theme management with applyTheme; MOBILE_QUERY breakpoint constant (single source for matchMedia callers)
 │   │   ├── trace.js         # Live trace log panel: SSE streaming from /api/trace-logs, auto-scroll, pause/resume, exponential backoff reconnect
 │   │   └── ui.js            # UI utilities: toast notifications, formatting, auto-resize, scroll, metrics display
 │   ├── vendor/              # Pinned vendored frontend libraries (marked 15.0.7, DOMPurify 3.2.4, mermaid 10.9.8) served at /static/vendor/ so markdown, sanitization and diagram rendering work offline
-│   └── index.html          # Main HTML page with sidebar (Connection, Models, History, Settings, Trace Log), chat area, and toast container
+│   └── index.html          # Main HTML page with sidebar (Connection, Models, History, Settings, Profiles, Trace Log), chat area, and toast container
 ├── tests/
 │   ├── __init__.py          # Empty test package init
 │   ├── test_agent.py        # Unit tests for ChatAgent message conversion (incl. multimodal image/audio/file parts), streaming (text, thinking, tool calls), tool_call_id-based result matching, system prompt deduplication, and cooperative cancellation (incl. cancellation during model silence)
 │   ├── test_backend.py      # Unit tests for config, logging, and proxy functionality (incl. stream read timeout)
 │   ├── test_integration.py  # Integration tests: connect, list/load/unload models, chat, metrics, session management (multi-turn, tool history, multimodal), removed tool endpoints (404), file upload (incl. 50MB cap), CORS, auth, errors, X-LM-Studio-URL SSRF validation, graceful shutdown (SIGINT with 5s force-exit), and request cancellation (chat disconnect, proxy disconnect, cooperative cancel)
 │   ├── test_tools.py        # Unit tests for tool execution: run_python_code subprocess (output, stderr, timeout, size cap), open_web_page (fetch, truncation, SSRF rejection, errors), live web_search, and agent toolset wiring
-│   ├── test_js_runtime.js   # Node.js runtime tests: state management (defaults, persist, restore, session save with cap incl. audio/file data-URI sanitization, abortActiveRequest), UI utilities, session lifecycle (continue, delete, error handling)
+│   ├── test_js_runtime.js   # Node.js runtime tests: state management (defaults, persist, restore, session save with cap incl. audio/file data-URI sanitization, profiles, abortActiveRequest), UI utilities, session lifecycle (continue, delete, error handling)
 │   ├── test_js_syntax.py    # Syntax validation tests for all JavaScript modules (Node.js --check and reserved word scanning)
-│   ├── test_screenshot.py   # Playwright tests: visual rendering (page layout, panels, elements, screenshot pixel validation) and interactive behavioral tests (connect, send message, new chat, settings toggle, model load/unload, copy button, stop button, new chat cancels request, sidebar collapse desktop+mobile, mobile panels visible on load, trace log overflow stability), XSS sanitization, and live viewport resize (desktop/tablet/mobile)
+│   ├── test_screenshot.py   # Playwright tests: visual rendering (page layout, panels, elements, screenshot pixel validation) and interactive behavioral tests (connect, send message, new chat, settings toggle, model load/unload, copy button, stop button, new chat cancels request, sidebar collapse desktop+mobile, mobile panels visible on load, trace log overflow stability), skippable live-endpoint tests (connect/list, load+chat+unload against a real LM Studio), XSS sanitization, and live viewport resize (desktop/tablet/mobile)
 │   └── test_url_security.py # Unit tests for the SSRF-safe URL validators (DNS resolution mocked)
 ├── .dockerignore            # Build context exclusions for the Docker image
 ├── AGENTS.md                # Project guidelines and documentation
@@ -66,6 +67,8 @@
 ├── package-lock.json        # Node.js dependency lock file
 └── run.py                   # Entry point; delegates to backend.server.run (Ctrl+C graceful shutdown with 5s force-exit)
 ```
+
+Unset settings: `systemPrompt: ""` / `temperature: null` mean "use server default" — the frontend sends null/empty and the backend omits them from the model request (temperature → LM Studio's own default; empty prompt → no system message). Named profiles (profiles.js) persist in localStorage under the key `lm_console_profiles`.
 
 ### Server Restart
 `pkill -f uvicorn` is unreliable — always use `kill -9 <pid>` (from `ps aux | grep uvicorn`) to forcefully terminate before restarting.

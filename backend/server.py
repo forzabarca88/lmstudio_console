@@ -358,8 +358,8 @@ async def chat_endpoint(request: Request):
         {
             "model": str,
             "messages": [{role, content}, ...],
-            "temperature": float,
-            "system_prompt": str (optional),
+            "temperature": float | null (optional; null/absent = server default),
+            "system_prompt": str (optional; empty/absent = none),
             "toolCallEnabled": bool (optional, default false),
         }
 
@@ -376,7 +376,7 @@ async def chat_endpoint(request: Request):
 
     model = body.get("model", "")
     messages = body.get("messages", [])
-    temperature = body.get("temperature", 0.7)
+    temperature = body.get("temperature")
     system_prompt = body.get("system_prompt", "")
     tool_call_enabled = body.get("toolCallEnabled", False)
 

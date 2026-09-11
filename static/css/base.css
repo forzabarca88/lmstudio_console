@@ -1026,7 +1026,7 @@ input[type="range"] {
 
     /* Touch targets: every tappable control reaches 44px on phones. */
     .btn { min-height: 44px; padding: 12px 14px; font-size: 0.85rem; }
-    .history-toggle, .section-toggle { min-height: 44px; font-size: 0.9rem; }
+    .history-toggle, .settings-toggle, .profiles-toggle, .section-toggle { min-height: 44px; font-size: 0.9rem; }
     .trace-controls button { min-height: 44px; padding: 10px 14px; font-size: 0.8rem; }
     .send-btn, .attach-btn { width: 44px; height: 44px; }
     input[type="range"] { height: 32px; }
@@ -1054,7 +1054,7 @@ input[type="range"] {
        single .sidebar-scroll context instead of creating their own
        scrollbars on phones (the 300px/240px caps above stay desktop-only).
        Their overflow-y: auto is harmless once max-height is none. */
-    .history-list { max-height: none; }
+    .history-list, .profile-list { max-height: none; }
     .trace-log { max-height: none; }
 }
 
@@ -1160,9 +1160,9 @@ input[type="range"] {
 }
 
 /* ═══════════════════════════════════════════
-   HISTORY PANEL
+   HISTORY PANEL (shared with the Profiles list)
    ═══════════════════════════════════════════ */
-.history-toggle {
+.history-toggle, .profiles-toggle {
     width: 100%;
     display: flex;
     align-items: center;
@@ -1178,30 +1178,30 @@ input[type="range"] {
     transition: color 0.15s;
 }
 
-.history-toggle:hover { color: var(--text-primary); }
+.history-toggle:hover, .profiles-toggle:hover { color: var(--text-primary); }
 
-.history-toggle .chevron {
+.history-toggle .chevron, .profiles-toggle .chevron {
     transition: transform 0.2s;
     font-size: 0.6rem;
 }
 
-.history-toggle.open .chevron {
+.history-toggle.open .chevron, .profiles-toggle.open .chevron {
     transform: rotate(180deg);
 }
 
-.history-panel {
+.history-panel, .profiles-panel {
     max-height: 0;
     overflow: hidden;
     transition: max-height 0.3s ease, overflow 0s 0.3s;
 }
 
-.history-panel.open {
+.history-panel.open, .profiles-panel.open {
     max-height: none;
     overflow: visible;
     transition: max-height 0.3s ease, overflow 0s 0s;
 }
 
-.history-list {
+.history-list, .profile-list {
     list-style: none;
     display: flex;
     flex-direction: column;
@@ -1210,7 +1210,7 @@ input[type="range"] {
     overflow-y: auto;
 }
 
-.history-item {
+.history-item, .profile-item {
     display: flex;
     align-items: flex-start;
     justify-content: space-between;
@@ -1223,17 +1223,17 @@ input[type="range"] {
     gap: 8px;
 }
 
-.history-item:hover {
+.history-item:hover, .profile-item:hover {
     background: var(--bg-surface);
     border-color: var(--accent);
 }
 
-.history-info {
+.history-info, .profile-info {
     flex: 1;
     min-width: 0;
 }
 
-.history-preview {
+.history-preview, .profile-name {
     font-family: var(--font-mono);
     font-size: 0.72rem;
     color: var(--text-primary);
@@ -1242,20 +1242,20 @@ input[type="range"] {
     text-overflow: ellipsis;
 }
 
-.history-meta {
+.history-meta, .profile-meta {
     font-family: var(--font-mono);
     font-size: 0.58rem;
     color: var(--text-muted);
     margin-top: 3px;
 }
 
-.history-actions {
+.history-actions, .profile-actions {
     display: flex;
     gap: 4px;
     flex-shrink: 0;
 }
 
-.history-btn {
+.history-btn, .profile-btn {
     padding: 3px 8px;
     font-family: var(--font-mono);
     font-size: 0.6rem;
@@ -1268,19 +1268,21 @@ input[type="range"] {
     white-space: nowrap;
 }
 
-.history-btn:hover {
+.history-btn:hover, .profile-btn:hover {
     border-color: var(--accent);
     color: var(--text-primary);
 }
 
-.history-btn.delete-btn:hover {
+.history-btn.delete-btn:hover, .profile-btn.delete-btn:hover {
     border-color: var(--danger);
     color: var(--danger);
     background: var(--danger-soft);
 }
 
 /* ═══════════════════════════════════════════
-   SETTINGS TOGGLE
+   SETTINGS + PROFILES TOGGLES
+   (Profiles shares the History toggle/panel rules above; this group
+   keeps the Settings styles intact without duplicating them.)
    ═══════════════════════════════════════════ */
 .settings-toggle {
     width: 100%;

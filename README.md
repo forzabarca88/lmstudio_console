@@ -19,6 +19,8 @@ Remote web management dashboard and chat interface for LM Studio.
 - **Collapsible Sidebar**: Collapsible on all screen sizes — chevron tab on desktop, full-width toggle on mobile
 - **Persistent Chat**: Chat messages preserved across model changes and disconnects
 - **Settings**: Configurable system prompt and temperature
+- **Server-Default Settings**: System prompt and temperature default to UNSET (the server's defaults are used), with per-field "use server default" toggles
+- **Profiles**: Save/load/delete/modify named profiles covering endpoint, API token, model, system prompt, temperature, and tool toggle — persisted in localStorage under `lm_console_profiles`
 - **Persistence**: Settings saved to localStorage between sessions
 - **Trace Logging**: Detailed request/response logging on the server console
 - **Live Trace Log**: Collapsible panel showing real-time server logs streamed via SSE (readable font sizes)
@@ -80,7 +82,7 @@ The app runs as a non-root user; configure ports/URLs via the same environment v
 │   ├── logger.py      # Trace logging with shared logger, RequestTrace context, cancellation tracking, and SSE streamer integration
 │   ├── log_streamer.py # SSE broadcaster for trace log entries (ring buffer, subscriber broadcast)
 │   ├── proxy.py       # HTTP proxy using httpx for forwarding requests to LM Studio/OpenAI endpoints with streaming and graceful cancellation support
-│   ├── server.py      # FastAPI app with proxy routes, chat endpoint (client disconnect detection, cooperative cancellation), file upload (50MB cap), trace log SSE, CORS middleware, SSRF-safe X-LM-Studio-URL handling, and graceful shutdown (5s force-exit)
+│   ├── server.py      # FastAPI app with proxy routes, chat endpoint (client disconnect detection, cooperative cancellation, temperature null/absent = server default), file upload (50MB cap), trace log SSE, CORS middleware, SSRF-safe X-LM-Studio-URL handling, and graceful shutdown (5s force-exit)
 │   ├── agent.py       # Pydantic AI Agent wrapper for chat with automatic tool call handling (Pydantic AI internal tool loop), SSE tool_call/tool_result events, thinking tokens, message format conversion, and cooperative cancellation support
 │   ├── tools.py       # Pydantic AI tool definitions (web_search, open_web_page, run_python_code): run_python_code in a disposable isolated subprocess, web_search off the event loop, open_web_page via SSRF-validated streaming fetch with a size cap
 │   └── url_security.py # SSRF-safe URL validation for the client-supplied proxy target (LAN ranges allowed) and outbound tool fetches (global-only), with metadata-hostname block and DNS resolution checks
@@ -92,12 +94,13 @@ The app runs as a non-root user; configure ports/URLs via the same environment v
 │   │   └── theme-warm.css       # Warm Minimal: rounded/editorial — 16px+ radius, dashed borders, cream palette
 │   ├── js/
 │   │   ├── api.js     # API call utilities
-│   │   ├── app.js     # Main entry point; collapsible sidebar toggle
+│   │   ├── app.js     # Main entry point; profiles wiring; collapsible sidebar toggle
 │   │   ├── chat.js    # Chat + metrics + mermaid + attachments + thinking tokens + tool call display (executing/done/error via SSE)
 │   │   ├── connection.js  # Connection management + heartbeat
 │   │   ├── history.js # Chat session history
 │   │   ├── models.js  # Model management
-│   │   ├── state.js   # State & localStorage
+│   │   ├── profiles.js  # Named profiles: save/load/delete/modify settings snapshots (endpoint, model, prompt, temperature, tools)
+│   │   ├── state.js   # State & localStorage (settings, sessions, profiles; unset system prompt/temperature = server default)
 │   │   ├── trace.js   # SSE client for live trace log streaming
 │   │   └── ui.js      # UI utilities + metrics display
 │   ├── vendor/        # Pinned vendored frontend libraries (marked 15.0.7, DOMPurify 3.2.4, mermaid 10.9.8) served at /static/vendor/ so markdown, sanitization and diagram rendering work offline
@@ -109,7 +112,7 @@ The app runs as a non-root user; configure ports/URLs via the same environment v
 │   ├── test_integration.py
 │   ├── test_js_syntax.py
 │   ├── test_js_runtime.js
-│   ├── test_screenshot.py  # Playwright UI screenshot validation
+│   ├── test_screenshot.py  # Playwright UI validation (visual + behavioral) with skippable live-endpoint tests
 │   ├── test_tools.py
 │   └── test_url_security.py
 ├── .dockerignore      # Build context exclusions for the Docker image

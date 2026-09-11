@@ -4,6 +4,7 @@
 
 const SETTINGS_KEY = "lm_console_settings";
 const HISTORY_KEY = "lm_console_history";
+const PROFILES_KEY = "lm_console_profiles";
 
 // Maximum number of chat sessions to keep in history (SPEC: at least 10).
 const HISTORY_MAX_SESSIONS = 10;
@@ -39,8 +40,9 @@ function isStorageQuotaError(e) {
 
 /**
  * Notify the UI (app.js) about a persistence problem. The listener shows a
- * toast and re-renders the history list when sessions were dropped.
- * @param {Object} detail - { message, historyChanged? }
+ * toast and re-renders the history list when sessions were dropped or the
+ * profile list when profiles were dropped.
+ * @param {Object} detail - { message, historyChanged?, profilesChanged? }
  */
 function dispatchStorageWarning(detail) {
     window.dispatchEvent(new CustomEvent("lmconsole:storage-warning", { detail }));
@@ -181,8 +183,11 @@ export const state = {
     selectedModel: null,
     isLmStudioEndpoint: false, // true = LM Studio (models need loading), false = standard OpenAI
     chatMessages: [],
-    systemPrompt: "You are a helpful assistant.",
-    temperature: 0.7,
+    // Empty string = unset → server default. Legacy stored values are kept
+    // as user data on restore (no migration); only fresh installs start unset.
+    systemPrompt: "",
+    // null = unset → server default (ModelSettings omits the field).
+    temperature: null,
     streaming: false,
     // Chat metrics
     metrics: {
@@ -193,6 +198,10 @@ export const state = {
     // Session history
     sessionHistory: [],
     currentSessionId: null,
+    // Named profiles (see profiles.js): { name, endpoint, apiToken,
+    // selectedModel, systemPrompt, temperature, toolCallEnabled, savedAt }
+    // Persisted under PROFILES_KEY.
+    profiles: [],
     // Heartbeat
     heartbeatInterval: null,
     // Active request cancellation (runtime only, never persisted)
@@ -355,6 +364,114 @@ export function loadSessionHistory() {
 }
 
 /**
+ * Load profiles from localStorage.
+ *
+ * Only structurally valid entries survive (objects with a non-empty
+ * string name) — a corrupted store must never break list rendering or
+ * name-based upsert/delete lookups.
+ */
+export function loadProfiles() {
+    let raw = null;
+    try {
+        raw = localStorage.getItem(PROFILES_KEY);
+    } catch (e) {
+        // Storage access itself can throw (disabled storage, some private
+        // modes); degrade to an empty list like the parse-failure path.
+        console.error("Failed to read profiles from localStorage:", e);
+        state.profiles = [];
+        return;
+    }
+    let saved = null;
+    if (raw) {
+        try {
+            saved = JSON.parse(raw);
+        } catch {
+            saved = null;
+        }
+    }
+    if (!Array.isArray(saved)) {
+        state.profiles = [];
+        return;
+    }
+    state.profiles = saved.filter(p =>
+        p && typeof p === "object" && typeof p.name === "string" && p.name.trim() !== ""
+    );
+}
+
+/**
+ * Persist profiles to localStorage, recovering from the browser quota
+ * limit (same strategy as persistHistory: drop the oldest profile until
+ * the write fits, and surface any trimming via the
+ * "lmconsole:storage-warning" event so the UI can re-render and toast).
+ */
+function persistProfiles() {
+    let profiles = [...state.profiles];
+    let freed = false;
+
+    const tryWrite = (candidate) => {
+        let result = writeStorage(PROFILES_KEY, JSON.stringify(candidate));
+        if (result === "quota" && !freed) {
+            // Free the space held by the previously stored (larger) value
+            // before retrying with a smaller candidate.
+            try {
+                localStorage.removeItem(PROFILES_KEY);
+                freed = true;
+            } catch {
+                // ignore - a failed removeItem cannot help anyway
+            }
+            result = writeStorage(PROFILES_KEY, JSON.stringify(candidate));
+        }
+        return result;
+    };
+
+    let dropped = 0;
+    let result = tryWrite(profiles);
+    while (result === "quota" && profiles.length > 0) {
+        profiles.pop();
+        dropped++;
+        result = tryWrite(profiles);
+    }
+
+    if (result === "ok") {
+        state.profiles = profiles;
+        if (dropped > 0) {
+            dispatchStorageWarning({
+                message: `Storage is full — ${dropped} profile${dropped === 1 ? "" : "s"} removed.`,
+                profilesChanged: true,
+            });
+        }
+        return;
+    }
+
+    if (result === "error") {
+        // Non-quota failure: storage is unavailable (private mode, disabled
+        // storage). Keep the in-memory profiles; writes will keep failing.
+        console.error("Profiles could not be persisted (storage unavailable)");
+        return;
+    }
+
+    // Even an empty list did not fit: clear the key so state matches what
+    // is actually on disk, and warn instead of failing silently.
+    try {
+        localStorage.removeItem(PROFILES_KEY);
+    } catch {
+        // ignore
+    }
+    state.profiles = [];
+    dispatchStorageWarning({
+        message: "Browser storage is full — profiles could not be saved.",
+        profilesChanged: true,
+    });
+}
+
+/**
+ * Save profiles to localStorage (quota-safe; see persistProfiles).
+ */
+export function saveProfiles() {
+    persistProfiles();
+}
+
+/**
  * Abort the active in-flight request, if any.
  *
  * This only cancels the client-side fetch via the stored AbortController. It
@@ -406,14 +523,23 @@ export function loadSettings(dom) {
                 state.apiToken = saved.apiToken;
                 dom.apiToken.value = saved.apiToken;
             }
-            if (saved.systemPrompt) {
-                state.systemPrompt = saved.systemPrompt;
-                dom.systemPrompt.value = saved.systemPrompt;
-            }
-            if (saved.temperature !== undefined) {
-                state.temperature = saved.temperature;
-                dom.temperature.value = saved.temperature;
-                dom.temperatureValue.textContent = saved.temperature.toFixed(2);
+            // System prompt: empty = unset (use server default).
+            state.systemPrompt = saved.systemPrompt || "";
+            dom.systemPrompt.value = state.systemPrompt;
+            dom.systemPromptUnset.checked = state.systemPrompt === "";
+            dom.systemPrompt.disabled = dom.systemPromptUnset.checked;
+            // Temperature: null = unset (use server default). A stored null
+            // must not reach toFixed() — guard with a typeof check.
+            state.temperature = (typeof saved.temperature === "number") ? saved.temperature : null;
+            if (state.temperature === null) {
+                dom.temperatureUnset.checked = true;
+                dom.temperature.disabled = true;
+                dom.temperatureValue.textContent = "—";
+            } else {
+                dom.temperature.value = state.temperature;
+                dom.temperatureValue.textContent = state.temperature.toFixed(2);
+                dom.temperatureUnset.checked = false;
+                dom.temperature.disabled = false;
             }
             if (saved.selectedModel) {
                 state.selectedModel = saved.selectedModel;
@@ -438,6 +564,7 @@ export function loadSettings(dom) {
         // Ignore parse errors from corrupt localStorage
     }
     loadSessionHistory();
+    loadProfiles();
 }
 
 /**

@@ -7,6 +7,7 @@ import { connect, disconnect } from "./connection.js";
 import { refreshModels, loadModel, unloadModel } from "./models.js";
 import { sendMessage, newChat, clearAttachments, renderAttachmentPreview, cancelRequest } from "./chat.js";
 import { renderHistoryList, continueSession, deleteSession } from "./history.js";
+import { renderProfileList, saveProfile } from "./profiles.js";
 import { showToast, autoResizeInput, updateMetrics } from "./ui.js";
 import { connectTraceLog, disconnectTraceLog, clearTraceLog, togglePause } from "./trace.js";
 
@@ -30,13 +31,20 @@ const dom = {
     settingsToggle: document.getElementById("settingsToggle"),
     settingsPanel: document.getElementById("settingsPanel"),
     systemPrompt: document.getElementById("systemPrompt"),
+    systemPromptUnset: document.getElementById("systemPromptUnset"),
     temperature: document.getElementById("temperature"),
+    temperatureUnset: document.getElementById("temperatureUnset"),
     temperatureValue: document.getElementById("temperatureValue"),
     toolCallToggle: document.getElementById("toolCallToggle"),
     themeSelect: document.getElementById("themeSelect"),
     historyToggle: document.getElementById("historyToggle"),
     historyPanel: document.getElementById("historyPanel"),
     historyList: document.getElementById("historyList"),
+    profilesToggle: document.getElementById("profilesToggle"),
+    profilesPanel: document.getElementById("profilesPanel"),
+    profileName: document.getElementById("profileName"),
+    saveProfileBtn: document.getElementById("saveProfileBtn"),
+    profileList: document.getElementById("profileList"),
     statusDot: document.getElementById("statusDot"),
     statusText: document.getElementById("statusText"),
     emptyState: document.getElementById("emptyState"),
@@ -132,16 +140,64 @@ dom.historyToggle.addEventListener("click", () => {
     revealPanelContent(dom.historyPanel, dom.historyList);
 });
 
+// Profiles panel toggle
+dom.profilesToggle.addEventListener("click", () => {
+    dom.profilesToggle.classList.toggle("open");
+    dom.profilesPanel.classList.toggle("open");
+    revealPanelContent(dom.profilesPanel, dom.profileName);
+});
+
+// Save (or modify, by name) the profile from the current settings
+dom.saveProfileBtn.addEventListener("click", () => saveProfile(dom));
+
 // Settings persistence
 dom.systemPrompt.addEventListener("change", () => {
     state.systemPrompt = dom.systemPrompt.value;
     saveSettings();
 });
 
+// "Use server default" toggles: checking stores the unset value
+// (empty prompt / null temperature) and disables the control; unchecking
+// re-enables it. A disabled control never fires its own listeners, so no
+// stale value can overwrite the unset state.
+dom.systemPromptUnset.addEventListener("change", () => {
+    if (dom.systemPromptUnset.checked) {
+        state.systemPrompt = "";
+        dom.systemPrompt.value = "";
+        dom.systemPrompt.disabled = true;
+        saveSettings();
+    } else {
+        // Re-enable; any text still in the textarea is left untouched.
+        dom.systemPrompt.disabled = false;
+    }
+});
+
 dom.temperature.addEventListener("input", () => {
     state.temperature = parseFloat(dom.temperature.value);
     dom.temperatureValue.textContent = state.temperature.toFixed(2);
     saveSettings();
+});
+
+dom.temperatureUnset.addEventListener("change", () => {
+    if (dom.temperatureUnset.checked) {
+        state.temperature = null;
+        dom.temperatureValue.textContent = "—";
+        dom.temperature.disabled = true;
+        saveSettings();
+    } else {
+        // Re-enable; the #temperature input listener above updates
+        // state + value display as the slider moves.
+        dom.temperature.disabled = false;
+        if (state.temperature === null) {
+            // The slider was disabled while unset, so it never fired its
+            // own listener: seed state from the slider's current value and
+            // refresh the readout so an immediate save (e.g. a profile)
+            // captures a number instead of the stale null.
+            state.temperature = parseFloat(dom.temperature.value);
+            dom.temperatureValue.textContent = state.temperature.toFixed(2);
+            saveSettings();
+        }
+    }
 });
 
 // Tool call toggle
@@ -263,6 +319,7 @@ dom.tracePauseBtn.addEventListener("click", () => togglePause(dom));
 let lastStorageWarningAt = 0;
 window.addEventListener("lmconsole:storage-warning", (e) => {
     if (e.detail?.historyChanged) renderHistoryList(dom);
+    if (e.detail?.profilesChanged) renderProfileList(dom);
     const now = Date.now();
     if (now - lastStorageWarningAt > 15000) {
         lastStorageWarningAt = now;
@@ -284,3 +341,6 @@ applyTheme(state.theme);
 if (dom.themeSelect) dom.themeSelect.value = state.theme;
 autoResizeInput(dom.chatInput);
 renderHistoryList(dom);
+// Profiles are loaded inside loadSettings() above — render them once the
+// persisted list is available.
+renderProfileList(dom);

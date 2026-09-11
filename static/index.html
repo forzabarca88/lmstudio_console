@@ -82,14 +82,28 @@
             <div class="section">
                 <div class="section-label">Chat Settings</div>
                 <div class="field">
+                    <label class="toggle-label">
+                        <input type="checkbox" id="systemPromptUnset" checked>
+                        <span class="toggle-slider"></span>
+                        <span class="toggle-text">Use server default system prompt</span>
+                    </label>
+                </div>
+                <div class="field">
                     <label for="systemPrompt">System Prompt</label>
-                    <textarea id="systemPrompt" placeholder="You are a helpful assistant."></textarea>
+                    <textarea id="systemPrompt" placeholder="You are a helpful assistant." disabled></textarea>
+                </div>
+                <div class="field">
+                    <label class="toggle-label">
+                        <input type="checkbox" id="temperatureUnset" checked>
+                        <span class="toggle-slider"></span>
+                        <span class="toggle-text">Use server default temperature</span>
+                    </label>
                 </div>
                 <div class="field">
                     <label for="temperature">Temperature</label>
                     <div class="range-row">
-                        <input type="range" id="temperature" min="0" max="2" step="0.05" value="0.7">
-                        <span class="range-value" id="temperatureValue">0.70</span>
+                        <input type="range" id="temperature" min="0" max="2" step="0.05" value="0.7" disabled>
+                        <span class="range-value" id="temperatureValue">—</span>
                     </div>
                 </div>
                 <div class="field">
@@ -107,6 +121,28 @@
                         <option value="warm">Warm Minimal</option>
                     </select>
                 </div>
+            </div>
+        </div>
+
+        <button class="profiles-toggle" id="profilesToggle">
+            <span>👤 Profiles</span>
+            <span class="chevron">▼</span>
+        </button>
+        <div class="profiles-panel" id="profilesPanel">
+            <div class="section">
+                <div class="section-label">Profiles</div>
+                <div class="field">
+                    <label for="profileName">Profile Name</label>
+                    <input type="text" id="profileName" placeholder="My profile">
+                </div>
+                <div class="btn-row" style="margin-bottom: 12px;">
+                    <button class="btn btn-primary" id="saveProfileBtn">Save</button>
+                </div>
+                <ul class="profile-list" id="profileList">
+                    <li class="empty-state" style="flex:unset;padding:20px 0;">
+                        <div class="empty-subtitle">Saved profiles will appear here</div>
+                    </li>
+                </ul>
             </div>
         </div>
 

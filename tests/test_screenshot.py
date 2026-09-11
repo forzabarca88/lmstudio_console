@@ -17,10 +17,13 @@ import sys
 import json
 import struct
 import hashlib
+import socket
 import unittest
 import subprocess
 import time
 import signal
+
+import httpx
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
@@ -33,6 +36,31 @@ BASE_URL = f"http://{SERVER_HOST}:{SERVER_PORT}"
 
 # Screenshot directory
 SCREENSHOT_DIR = os.path.join(os.path.dirname(__file__), "screenshots")
+
+# Live LM Studio endpoint used by the skippable live-endpoint success-path
+# tests. Override with the LIVE_LM_STUDIO_URL env var. The probe runs once at
+# import time so the live tests are SKIPPED (not failed) when the endpoint is
+# down.
+LIVE_LM_STUDIO_URL = os.environ.get(
+    "LIVE_LM_STUDIO_URL", "http://192.168.0.5:1234"
+)
+
+
+def _probe_live_endpoint(url):
+    """Return True if the live endpoint answers GET {url}/v1/models.
+
+    Uses a short (3 s) timeout so an unreachable endpoint only adds a few
+    seconds to test-module import; any network/HTTP error means unreachable.
+    """
+    try:
+        with httpx.Client(timeout=3.0) as client:
+            resp = client.get(f"{url}/v1/models")
+            return resp.status_code == 200
+    except Exception:
+        return False
+
+
+LIVE_ENDPOINT_REACHABLE = _probe_live_endpoint(LIVE_LM_STUDIO_URL)
 
 # Click offset for the send button. A positioned .cursor-indicator overlay
 # (right:16px within .chat-input-wrapper) sits over the right-center of the
@@ -81,6 +109,11 @@ DOM_JS = """const dom = {
     toastContainer: document.getElementById('toastContainer'),
     sidebar: document.getElementById('sidebar'),
     sidebarToggle: document.getElementById('sidebarToggle'),
+    profilesToggle: document.getElementById('profilesToggle'),
+    profilesPanel: document.getElementById('profilesPanel'),
+    profileName: document.getElementById('profileName'),
+    saveProfileBtn: document.getElementById('saveProfileBtn'),
+    profileList: document.getElementById('profileList'),
     traceToggle: document.getElementById('traceToggle'),
     tracePanel: document.getElementById('tracePanel'),
     traceLog: document.getElementById('traceLog'),
@@ -299,6 +332,59 @@ class TestScreenshot(unittest.TestCase):
             }"""
         )
 
+    def _install_chat_capture_mock(self, payloads):
+        """Mock /api/chat to capture request bodies and replay fixed SSE payloads.
+
+        Installs an in-page ``window.fetch`` mock (same pattern as
+        test_tool_call_sse_lifecycle): for every ``/api/chat`` request it
+        appends the parsed JSON request body to
+        ``window.__capturedChatBodies`` so tests can assert exactly what the
+        UI sent to the endpoint (model, messages, temperature,
+        system_prompt, toolCallEnabled, ...), then responds with a synthetic
+        SSE stream that replays ``payloads`` in order, one
+        ``data: {json}\\n\\n`` event per payload, 35 ms apart. Non-chat
+        fetches pass through to the original fetch untouched.
+
+        ``payloads`` is a list of plain dicts shaped like backend SSE events,
+        e.g. ``[{"content": "Hello"}, {"__usage__": {"prompt_tokens": 4,
+        "completion_tokens": 6, "total_tokens": 10}}]``. Multiple sends in
+        one test each append their body to the capture list.
+
+        No teardown is required: each test gets a fresh page (see setUp), so
+        the patched ``window.fetch`` is discarded with the page.
+        """
+        self.page.evaluate(
+            """(payloads) => {
+                window.__capturedChatBodies = [];
+                const originalFetch = window.fetch;
+                const encoder = new TextEncoder();
+                const lines = payloads.map(p => `data: ${JSON.stringify(p)}\\n\\n`);
+                window.fetch = (url, options) => {
+                    if (url !== '/api/chat') return originalFetch(url, options);
+                    window.__capturedChatBodies.push(JSON.parse(options.body));
+                    const stream = new ReadableStream({
+                        start(controller) {
+                            let index = 0;
+                            const push = () => {
+                                if (index >= lines.length) {
+                                    controller.close();
+                                    return;
+                                }
+                                controller.enqueue(encoder.encode(lines[index++]));
+                                setTimeout(push, 35);
+                            };
+                            push();
+                        },
+                    });
+                    return Promise.resolve(new Response(stream, {
+                        status: 200,
+                        headers: { 'Content-Type': 'text/event-stream' },
+                    }));
+                };
+            }""",
+            payloads,
+        )
+
     def _enable_chat_ui_for_test_model(self):
         """Inject a selected model into state and enable the chat input/buttons.
 
@@ -333,6 +419,73 @@ class TestScreenshot(unittest.TestCase):
         clicks the left portion of the button, which is always clear.
         """
         self.page.locator("#sendBtn").click(position=_SEND_BTN_CLICK_POS)
+
+    def _live_connect(self):
+        """Point the UI at the live endpoint and connect until 'Connected'.
+
+        Shared by both live tests. Each test navigates to a fresh page first,
+        so the connect flow is fully self-contained per test (connect reads
+        the #endpoint input value directly, so no extra event is needed).
+        """
+        self.page.fill("#endpoint", LIVE_LM_STUDIO_URL)
+        self.page.click("#connectBtn")
+        self.page.wait_for_function(
+            "() => document.getElementById('statusText').textContent === 'Connected'",
+            timeout=30_000,
+        )
+
+    def _live_clean_loaded_models(self):
+        """Best-effort: unload any models left loaded on the live endpoint.
+
+        A previously interrupted run (or manual use) can leave model
+        instances loaded; the endpoint has limited memory, so leftovers
+        make new loads fail with 'insufficient system resources'. Talks to
+        the live endpoint directly (like the import-time probe) so the UI
+        flow under test starts from a clean machine. Errors are ignored:
+        entries whose unload errors are stale list rows.
+
+        The unload API expects the INSTANCE id (e.g. "gemma-4-e2b-it-qat:2"),
+        not the model id — the app's own unload path (models.js) uses
+        loaded_instances[0].id. Posting the model id instead silently
+        no-ops, leaving the leftover loaded and the next load failing.
+        """
+        try:
+            with httpx.Client(timeout=10.0) as client:
+                resp = client.get(f"{LIVE_LM_STUDIO_URL}/api/v0/models")
+                resp.raise_for_status()
+                instance_ids = []
+                for m in resp.json().get("data", []):
+                    if m.get("state") != "loaded":
+                        continue
+                    instances = m.get("loaded_instances") or []
+                    instance_ids.append(
+                        instances[0]["id"]
+                        if instances and instances[0].get("id")
+                        else m["id"]
+                    )
+        except Exception:
+            return
+        for instance_id in instance_ids:
+            try:
+                httpx.post(
+                    f"{LIVE_LM_STUDIO_URL}/api/v1/models/unload",
+                    json={"instance_id": instance_id}, timeout=60.0,
+                )
+            except Exception:
+                pass
+
+    def _settle_toasts(self):
+        """Wait for all toasts to fully leave the DOM.
+
+        Toasts live ~3 s plus a short fade before removal. Called before each
+        model-load attempt so a stale toast from a previous attempt (or the
+        connect flow) cannot be matched by a toast-based wait_for_selector.
+        A no-op when the toast container is already empty.
+        """
+        self.page.wait_for_function(
+            "() => document.querySelectorAll('#toastContainer .toast').length === 0",
+            timeout=10_000,
+        )
 
     # --- Visual tests (existing) ---
 
@@ -395,9 +548,19 @@ class TestScreenshot(unittest.TestCase):
         # Verify settings elements are visible after panel opens
         self.assertTrue(self.page.locator("#systemPrompt").is_visible())
         self.assertTrue(self.page.locator("#temperature").is_visible())
+        # Unset toggles default to checked (server defaults) with the
+        # controls disabled; the temperature readout shows the unset dash.
+        self.assertTrue(self.page.locator("#systemPromptUnset").is_checked())
+        self.assertTrue(self.page.locator("#systemPrompt").is_disabled())
+        self.assertTrue(self.page.locator("#temperatureUnset").is_checked())
+        self.assertTrue(self.page.locator("#temperature").is_disabled())
+        self.assertEqual(self.page.locator("#temperatureValue").inner_text(), "—")
         # toolCallToggle checkbox is hidden by CSS (uses custom toggle slider)
-        # Check the toggle slider is visible instead
-        self.assertTrue(self.page.locator(".toggle-slider").is_visible())
+        # Check the toggle slider is visible instead (scoped: the panel now
+        # holds three toggle sliders)
+        self.assertTrue(
+            self.page.locator(".toggle-label:has(#toolCallToggle) .toggle-slider").is_visible()
+        )
 
         self._assert_screenshot_png(self._screenshot("04_settings_panel"), 1280, 720)
 
@@ -1530,6 +1693,662 @@ class TestScreenshot(unittest.TestCase):
         self.assertTrue(self.page.locator("#streamingIndicator").is_hidden())
         self.assertEqual(self.page.locator(".tool-call").count(), 1)
 
+    # --- G3: chat metrics update & render ---
+
+    def test_metrics_render_after_chat(self):
+        """SPEC: chat metrics update & render in the UI after a streamed reply.
+
+        Sends a message through the mocked /api/chat SSE stream (two content
+        deltas followed by a final __usage__ event) and verifies the metrics
+        bar renders with the final values. Per chat.js, the final TPS and
+        total-token metrics use completion_tokens (not total_tokens):
+          * #chatMetrics is visible
+          * #metricTpsValue > 0 (final TPS = completion_tokens / duration)
+          * #metricTtftValue matches ^\\d+\\.\\d{2}s$ (first content delta)
+          * #metricTokensValue == "6" (completion_tokens)
+        """
+        self._navigate()
+        self._enable_chat_ui_for_test_model()
+
+        self._install_chat_capture_mock([
+            {"content": "Hello"},
+            {"content": " world"},
+            {"__usage__": {"prompt_tokens": 4, "completion_tokens": 6, "total_tokens": 10}},
+        ])
+
+        self.page.fill("#chatInput", "Say hello")
+        self._click_send_btn()
+
+        # Wait for the assistant reply to render and the stream to finish
+        self.page.wait_for_selector(
+            ".message.assistant .message-text:has-text('Hello world')",
+            timeout=10000,
+        )
+        self.page.wait_for_selector("#streamingIndicator", state="hidden", timeout=10000)
+        self.assertTrue(self.page.locator("#streamingIndicator").is_hidden())
+
+        # Metrics bar is visible after the chat completes
+        self.assertTrue(
+            self.page.locator("#chatMetrics").is_visible(),
+            "Metrics bar should be visible after a chat",
+        )
+
+        # Final TPS = completion_tokens / total duration > 0
+        tps = float(self.page.locator("#metricTpsValue").inner_text())
+        self.assertGreater(tps, 0, f"Final TPS should be > 0, got {tps}")
+
+        # TTFT rendered as e.g. "0.04s"
+        ttft = self.page.locator("#metricTtftValue").inner_text()
+        self.assertRegex(
+            ttft, r"^\d+\.\d{2}s$",
+            f"TTFT should look like '0.04s', got {ttft!r}",
+        )
+
+        # Total token count uses completion_tokens (6), not total_tokens (10)
+        self.assertEqual(
+            self.page.locator("#metricTokensValue").inner_text(), "6",
+            "Total tokens metric should use completion_tokens from __usage__",
+        )
+
+        self._assert_screenshot_png(self._screenshot("35_metrics_render"), 1280, 720)
+
+    # --- G3: system prompt + temperature sent to the endpoint ---
+
+    def test_settings_prompt_temperature_sent_to_endpoint(self):
+        """SPEC: change system prompt + temperature, ensure sent to the endpoint.
+
+        Unchecks both "use server default" toggles in Settings (clicking the
+        visible .toggle-label wrappers — the raw checkboxes are CSS-hidden),
+        sets the system prompt to "Be concise." and the temperature slider to
+        1.25, then sends a message through the mocked /api/chat and asserts
+        the captured request body carries exactly those values.
+        """
+        self._navigate()
+
+        # Open the Settings panel
+        self.page.click("#settingsToggle")
+        self.page.wait_for_selector("#settingsPanel.open", timeout=5000)
+
+        # Uncheck both unset toggles via the visible .toggle-label wrappers.
+        # The panel holds three .toggle-label toggles, so scope each locator
+        # to its own checkbox to avoid strict-mode violations.
+        self.page.click(".toggle-label:has(#systemPromptUnset)")
+        self.page.click(".toggle-label:has(#temperatureUnset)")
+        self.assertFalse(self.page.locator("#systemPromptUnset").is_checked())
+        self.assertFalse(self.page.locator("#temperatureUnset").is_checked())
+        self.assertFalse(self.page.locator("#systemPrompt").is_disabled())
+        self.assertFalse(self.page.locator("#temperature").is_disabled())
+
+        # Set the prompt and temperature (slider step 0.05 → 1.25 is on-grid)
+        self.page.fill("#systemPrompt", "Be concise.")
+        self.page.evaluate("""() => {
+            const el = document.getElementById('temperature');
+            el.value = "1.25";
+            el.dispatchEvent(new Event("input"));
+        }""")
+        self.assertEqual(
+            self.page.locator("#temperatureValue").inner_text(), "1.25",
+            "Temperature readout should update when the slider is set",
+        )
+
+        self._install_chat_capture_mock([
+            {"content": "Hello"},
+            {"__usage__": {"prompt_tokens": 4, "completion_tokens": 6, "total_tokens": 10}},
+        ])
+        self._enable_chat_ui_for_test_model()
+
+        self.page.fill("#chatInput", "Say hello")
+        self._click_send_btn()
+
+        # Wait for the assistant reply to render and the stream to finish
+        self.page.wait_for_selector(
+            ".message.assistant .message-text:has-text('Hello')",
+            timeout=10000,
+        )
+        self.page.wait_for_selector("#streamingIndicator", state="hidden", timeout=10000)
+        self.assertTrue(self.page.locator("#streamingIndicator").is_hidden())
+
+        body = self.page.evaluate("() => window.__capturedChatBodies[0]")
+        self.assertEqual(
+            body["system_prompt"], "Be concise.",
+            "The system prompt set in Settings should be sent to the endpoint",
+        )
+        self.assertLess(
+            abs(body["temperature"] - 1.25), 1e-9,
+            f"The temperature set in Settings should be sent to the endpoint, got {body['temperature']}",
+        )
+
+        self._assert_screenshot_png(
+            self._screenshot("36_settings_prompt_temp_sent"), 1280, 720
+        )
+
+    def test_settings_unset_defaults_send_null(self):
+        """SPEC: unset (server-default) prompt + temperature send null/empty.
+
+        Fresh page (no localStorage) → the new defaults are unset: both
+        "use server default" toggles checked. The captured /api/chat body
+        must carry temperature: null (JSON null → server default) and
+        system_prompt "" (or null).
+        """
+        self._navigate()
+
+        # Fresh page defaults: both unset toggles checked (server defaults)
+        self.assertTrue(self.page.locator("#systemPromptUnset").is_checked())
+        self.assertTrue(self.page.locator("#temperatureUnset").is_checked())
+        self.assertEqual(
+            self.page.locator("#temperatureValue").inner_text(), "—",
+            "Fresh page should show the unset temperature dash",
+        )
+
+        self._install_chat_capture_mock([
+            {"content": "Hello"},
+            {"__usage__": {"prompt_tokens": 4, "completion_tokens": 6, "total_tokens": 10}},
+        ])
+        self._enable_chat_ui_for_test_model()
+
+        self.page.fill("#chatInput", "Say hello")
+        self._click_send_btn()
+
+        # Wait for the assistant reply to render and the stream to finish
+        self.page.wait_for_selector(
+            ".message.assistant .message-text:has-text('Hello')",
+            timeout=10000,
+        )
+        self.page.wait_for_selector("#streamingIndicator", state="hidden", timeout=10000)
+        self.assertTrue(self.page.locator("#streamingIndicator").is_hidden())
+
+        body = self.page.evaluate("() => window.__capturedChatBodies[0]")
+        self.assertIsNone(
+            body["temperature"],
+            "Unset temperature should be sent as JSON null (server default)",
+        )
+        self.assertIn(
+            body["system_prompt"], ("", None),
+            f"Unset system prompt should be sent as '' or null, got {body['system_prompt']!r}",
+        )
+
+        self._assert_screenshot_png(
+            self._screenshot("37_settings_unset_null"), 1280, 720
+        )
+
+    def test_settings_uncheck_temperature_seeds_slider_value(self):
+        """Unchecking the temperature 'use server default' toggle immediately
+        seeds state.temperature and the readout from the slider.
+
+        Fresh page: the slider holds its default value (0.7) while the
+        toggle is checked. Unchecking must synchronously seed
+        state.temperature with the slider value and show it formatted in
+        #temperatureValue ("0.70") — not leave the stale "—" readout.
+        """
+        self._navigate()
+
+        # Fresh page: unset by default
+        self.assertTrue(self.page.locator("#temperatureUnset").is_checked())
+        self.assertEqual(
+            self.page.locator("#temperatureValue").inner_text(), "—",
+            "Fresh page should show the unset temperature dash",
+        )
+
+        # Open the Settings panel and uncheck the temperature toggle via
+        # its visible .toggle-label wrapper (the checkbox is CSS-hidden).
+        self.page.click("#settingsToggle")
+        self.page.wait_for_selector("#settingsPanel.open", timeout=5000)
+        self.page.click(".toggle-label:has(#temperatureUnset)")
+        self.assertFalse(self.page.locator("#temperatureUnset").is_checked())
+        self.assertFalse(self.page.locator("#temperature").is_disabled())
+
+        # The readout immediately shows the slider's value, formatted (2 dp)
+        self.assertEqual(
+            self.page.locator("#temperatureValue").inner_text(), "0.70",
+            "Unchecking the toggle should immediately show the slider value",
+        )
+        self.assertAlmostEqual(
+            self.page.evaluate(
+                "() => import('/static/js/state.js').then(m => m.state.temperature)"
+            ),
+            0.7,
+            msg="state.temperature should be seeded from the slider (0.7)",
+        )
+
+    def test_tool_toggle_sent_to_endpoint(self):
+        """SPEC: toggle web search so the LLM can use it (tool toggle).
+
+        Clicks the visible .toggle-label wrapping #toolCallToggle in Settings
+        (the raw checkbox is CSS-hidden) to turn tool calls ON and asserts the
+        "Tool calls enabled" toast appears. Sends a message through the mocked
+        /api/chat and asserts the captured request body carries
+        toolCallEnabled: true. Clicks the same toggle again to turn it OFF and
+        sends a second message, asserting the second captured body carries
+        toolCallEnabled: false.
+        """
+        self._navigate()
+        self._enable_chat_ui_for_test_model()
+
+        self._install_chat_capture_mock([
+            {"content": "Hello"},
+            {"__usage__": {"prompt_tokens": 4, "completion_tokens": 6, "total_tokens": 10}},
+        ])
+
+        # Open the Settings panel
+        self.page.click("#settingsToggle")
+        self.page.wait_for_selector("#settingsPanel.open", timeout=5000)
+
+        # Fresh page: tool calls start disabled
+        self.assertFalse(self.page.locator("#toolCallToggle").is_checked())
+
+        # Turn the tool toggle ON via the visible .toggle-label wrapper.
+        # The panel holds multiple .toggle-label toggles, so scope the
+        # locator to its own checkbox to avoid strict-mode violations.
+        self.page.click(".toggle-label:has(#toolCallToggle)")
+        self.assertTrue(
+            self.page.locator("#toolCallToggle").is_checked(),
+            "Tool toggle checkbox should be checked after clicking its label",
+        )
+        # Toast appears immediately (toasts fade after ~3s — assert now)
+        self.page.wait_for_selector(
+            ".toast.info:has-text('Tool calls enabled')", timeout=5000
+        )
+
+        # First send: tool calls enabled
+        self.page.fill("#chatInput", "First message")
+        self._click_send_btn()
+
+        # Wait for the assistant reply to render and the stream to finish
+        self.page.wait_for_selector(
+            ".message.assistant .message-text:has-text('Hello')",
+            timeout=10000,
+        )
+        self.page.wait_for_selector("#streamingIndicator", state="hidden", timeout=10000)
+        self.assertTrue(self.page.locator("#streamingIndicator").is_hidden())
+
+        self.assertEqual(
+            len(self.page.evaluate("window.__capturedChatBodies")), 1,
+            "First send should capture exactly one /api/chat body",
+        )
+        body1 = self.page.evaluate("() => window.__capturedChatBodies[0]")
+        self.assertIs(
+            body1["toolCallEnabled"], True,
+            "toolCallEnabled: true should be sent while the tool toggle is ON",
+        )
+
+        # Turn the toggle OFF and send a second message
+        self.page.click(".toggle-label:has(#toolCallToggle)")
+        self.assertFalse(
+            self.page.locator("#toolCallToggle").is_checked(),
+            "Tool toggle checkbox should be unchecked after the second click",
+        )
+
+        self.page.fill("#chatInput", "Second message")
+        self._click_send_btn()
+
+        # Both mock sends replay the same "Hello" content, so wait for a
+        # SECOND assistant message to appear (the first already matches).
+        self.page.wait_for_function(
+            "() => document.querySelectorAll('.message.assistant').length >= 2",
+            timeout=10000,
+        )
+        self.page.wait_for_selector("#streamingIndicator", state="hidden", timeout=10000)
+        self.assertTrue(self.page.locator("#streamingIndicator").is_hidden())
+
+        self.assertEqual(
+            len(self.page.evaluate("window.__capturedChatBodies")), 2,
+            "Second send should append a second captured /api/chat body",
+        )
+        body2 = self.page.evaluate("() => window.__capturedChatBodies[1]")
+        self.assertIs(
+            body2["toolCallEnabled"], False,
+            "toolCallEnabled: false should be sent after the tool toggle is turned OFF",
+        )
+
+        self._assert_screenshot_png(
+            self._screenshot("38_tool_toggle_sent"), 1280, 720
+        )
+
+    # --- G3: history Continue -> send -> response, Delete, panel close ---
+
+    def test_history_continue_send_response(self):
+        """SPEC: load a session from history, continue with a response.
+
+        Seeds one saved session (user + assistant message) and a loaded
+        model into state, renders the history list, then clicks the
+        session's Continue button. Asserts the "Session restored" toast and
+        that the restored user message is visible in the chat. Then sends a
+        follow-up through the mocked /api/chat and asserts the captured
+        request body's messages carry the two prior messages AND the new
+        follow-up — proving the restored session context reached the
+        endpoint.
+        """
+        self._navigate()
+
+        # Open the History panel
+        self.page.click("#historyToggle")
+        self.page.wait_for_selector("#historyPanel.open", timeout=5000)
+
+        # Seed one saved session + a loaded model, then render the list
+        self._eval_with_dom(
+            """
+                const stateMod = await import('/static/js/state.js');
+                const historyMod = await import('/static/js/history.js');
+
+                stateMod.state.sessionHistory = [{
+                    id: 'session-1',
+                    createdAt: new Date().toISOString(),
+                    model: 'test-model',
+                    messages: [
+                        { role: 'user', content: 'Earlier question' },
+                        { role: 'assistant', content: 'Earlier answer' },
+                    ],
+                    preview: 'Earlier question',
+                }];
+                // A loaded model matching the session's model, so Continue
+                // leaves the chat input enabled.
+                stateMod.state.models = [{
+                    key: 'test-model',
+                    type: 'llm',
+                    display_name: 'Test',
+                    loaded_instances: [{ id: 'inst-1' }],
+                }];
+                stateMod.state.loadedModels.add('inst-1');
+
+                historyMod.renderHistoryList(dom);
+            """
+        )
+        self.page.wait_for_selector(
+            ".history-item:has-text('Earlier question')", timeout=5000
+        )
+
+        # Continue the session
+        self.page.click(".history-item .continue-btn")
+
+        # Toast + restored messages visible in the chat
+        self.page.wait_for_selector(
+            ".toast.success:has-text('Session restored')", timeout=5000
+        )
+        self.assertTrue(
+            self.page.locator(".message.user:has-text('Earlier question')").is_visible(),
+            "Restored user message should be visible in the chat",
+        )
+        self.assertTrue(
+            self.page.locator(".message.assistant:has-text('Earlier answer')").is_visible(),
+            "Restored assistant message should be visible in the chat",
+        )
+
+        # Continue left the input enabled; the mock captures the send
+        self._install_chat_capture_mock([
+            {"content": "Hello"},
+            {"__usage__": {"prompt_tokens": 4, "completion_tokens": 6, "total_tokens": 10}},
+        ])
+
+        self.page.fill("#chatInput", "Follow-up question")
+        self._click_send_btn()
+
+        # Wait for the new assistant reply (distinct from 'Earlier answer')
+        self.page.wait_for_selector(
+            ".message.assistant .message-text:has-text('Hello')",
+            timeout=10000,
+        )
+        self.page.wait_for_selector("#streamingIndicator", state="hidden", timeout=10000)
+        self.assertTrue(self.page.locator("#streamingIndicator").is_hidden())
+
+        # The captured request body must carry the full restored context:
+        # user "Earlier question", assistant "Earlier answer", user
+        # "Follow-up question".
+        body = self.page.evaluate("() => window.__capturedChatBodies[0]")
+        self.assertEqual(
+            len(body["messages"]), 3,
+            f"Expected 3 messages (2 restored + 1 new), got {len(body['messages'])}",
+        )
+        texts = [
+            m["content"] if isinstance(m["content"], str)
+            else " ".join(p.get("text", "") for p in m["content"])
+            for m in body["messages"]
+        ]
+        joined = " | ".join(texts)
+        for expected in ("Earlier question", "Earlier answer", "Follow-up question"):
+            self.assertIn(
+                expected, joined,
+                f"Restored session context should reach the endpoint; "
+                f"sent messages were: {joined!r}",
+            )
+
+        self._assert_screenshot_png(
+            self._screenshot("39_history_continue_send"), 1280, 720
+        )
+
+    def test_history_delete_session(self):
+        """SPEC: delete a saved session from history.
+
+        Seeds two sessions, renders the history list, then clicks the
+        first item's Delete button. Asserts one .history-item remains (the
+        second session), the "Session deleted" toast appears, and the
+        persisted localStorage history contains exactly one entry.
+        """
+        self._navigate()
+
+        # Open the History panel
+        self.page.click("#historyToggle")
+        self.page.wait_for_selector("#historyPanel.open", timeout=5000)
+
+        # Seed two saved sessions and render the list
+        self._eval_with_dom(
+            """
+                const stateMod = await import('/static/js/state.js');
+                const historyMod = await import('/static/js/history.js');
+
+                stateMod.state.sessionHistory = [
+                    {
+                        id: 'session-1',
+                        createdAt: new Date().toISOString(),
+                        model: 'test-model',
+                        messages: [
+                            { role: 'user', content: 'First question' },
+                            { role: 'assistant', content: 'First answer' },
+                        ],
+                        preview: 'First question',
+                    },
+                    {
+                        id: 'session-2',
+                        createdAt: new Date().toISOString(),
+                        model: 'test-model',
+                        messages: [
+                            { role: 'user', content: 'Second question' },
+                            { role: 'assistant', content: 'Second answer' },
+                        ],
+                        preview: 'Second question',
+                    },
+                ];
+
+                historyMod.renderHistoryList(dom);
+            """
+        )
+        self.assertEqual(
+            self.page.locator(".history-item").count(), 2,
+            "Both seeded sessions should render in the history list",
+        )
+
+        # Delete the first session
+        self.page.locator(".history-item").first.locator(".delete-btn").click()
+
+        # One item remains (the second session) + "Session deleted" toast
+        self.assertEqual(
+            self.page.locator(".history-item").count(), 1,
+            "Only the second session should remain after delete",
+        )
+        self.assertTrue(
+            self.page.locator(".history-item:has-text('Second question')").is_visible(),
+            "The remaining history item should be the second session",
+        )
+        self.page.wait_for_selector(
+            ".toast.info:has-text('Session deleted')", timeout=5000
+        )
+
+        # localStorage history now holds exactly the surviving entry
+        stored = self.page.evaluate(
+            '() => JSON.parse(localStorage.getItem("lm_console_history") || "[]")'
+        )
+        self.assertEqual(
+            len(stored), 1,
+            f"localStorage history should hold 1 entry after delete, got {len(stored)}",
+        )
+        self.assertEqual(stored[0]["id"], "session-2")
+
+        self._assert_screenshot_png(
+            self._screenshot("40_history_delete"), 1280, 720
+        )
+
+    def test_history_panel_closes(self):
+        """SPEC: history panel closes when its toggle is clicked again.
+
+        The .history-panel animates max-height (0.3s transition), so each
+        visibility assertion waits for the toggle class change AND the
+        transition to settle.
+        """
+        self._navigate()
+
+        # Hidden by default
+        self.assertFalse(self.page.locator("#historyPanel").is_visible())
+
+        # Open
+        self.page.click("#historyToggle")
+        self.page.wait_for_selector("#historyPanel.open", timeout=5000)
+        self.page.wait_for_timeout(400)  # let the max-height transition finish
+        self.assertTrue(
+            self.page.locator("#historyPanel").is_visible(),
+            "History panel should be visible after opening",
+        )
+
+        # Close
+        self.page.click("#historyToggle")
+        self.page.wait_for_function(
+            "() => !document.getElementById('historyPanel').classList.contains('open')",
+            timeout=5000,
+        )
+        self.page.wait_for_timeout(400)  # let the max-height transition finish
+        self.assertFalse(
+            self.page.locator("#historyPanel").is_visible(),
+            "History panel should be hidden after its toggle is clicked again",
+        )
+
+        self._assert_screenshot_png(
+            self._screenshot("41_history_panel_closes"), 1280, 720
+        )
+
+    # --- Live-endpoint success-path tests (skipped when the endpoint is down) ---
+
+    @unittest.skipUnless(
+        LIVE_ENDPOINT_REACHABLE,
+        f"live endpoint {LIVE_LM_STUDIO_URL} unreachable",
+    )
+    def test_live_connect_and_list_models(self):
+        """Live: connect to the LM Studio endpoint and list its models.
+
+        SPEC: connect + list models success path. Skipped (not failed) when
+        the live endpoint is unreachable at import time.
+        """
+        self._navigate()
+        self._live_connect()
+
+        count = self.page.locator("#modelList .model-item").count()
+        self.assertGreaterEqual(
+            count, 1, f"expected at least 1 model in the list, got {count}"
+        )
+
+        self._assert_screenshot_png(
+            self._screenshot("42_live_connect_models"), 1280, 720
+        )
+
+    @unittest.skipUnless(
+        LIVE_ENDPOINT_REACHABLE,
+        f"live endpoint {LIVE_LM_STUDIO_URL} unreachable",
+    )
+    def test_live_load_model_chat_and_unload(self):
+        """Live: load a model, chat with it, verify metrics, then unload.
+
+        SPEC: connect / list models / load / send message success path. Can
+        legitimately take several minutes end-to-end (the proxy allows 600 s
+        for models/load; the chat step allows 120 s). Skipped (not failed)
+        when the live endpoint is unreachable at import time.
+
+        The live endpoint's model list can contain stale entries that fail
+        to load (e.g. 404 model_not_found), so up to 3 model items are tried
+        in order until one loads successfully. Leftover loaded instances
+        (from an interrupted previous run) are unloaded first, since the
+        endpoint's limited memory otherwise makes new loads fail.
+        """
+        self._navigate()
+        self._live_connect()
+        self._live_clean_loaded_models()
+
+        # Try up to 3 model items in order until one loads. Each attempt:
+        # settle any stale toast from a previous attempt, select the item,
+        # click Load, and wait for the success OR error toast (the proxy
+        # allows 600 s for models/load; the error toast makes a genuine
+        # failure bail out fast instead of hanging for the full budget).
+        count = self.page.locator("#modelList .model-item").count()
+        self.assertGreaterEqual(
+            count, 1, f"expected at least 1 model in the list, got {count}"
+        )
+        attempted = []
+        loaded_model = None
+        for index in range(min(3, count)):
+            item = self.page.locator("#modelList .model-item").nth(index)
+            model_id = item.get_attribute("data-key")
+            attempted.append(model_id)
+            self._settle_toasts()
+            item.click()
+            self.page.click("#loadModelBtn")
+            load_toast = self.page.wait_for_selector(
+                ".toast.success:has-text('Model loaded'), "
+                ".toast.error:has-text('Load failed')",
+                timeout=600_000,
+            )
+            if "success" in (load_toast.get_attribute("class") or ""):
+                loaded_model = model_id
+                break
+            # Failed load (e.g. stale entry) — no unload needed; the next
+            # attempt settles the error toast before proceeding.
+        self.assertIsNotNone(
+            loaded_model,
+            f"no loadable model found; attempted: {attempted}",
+        )
+
+        # Chat: ask the model to reply with exactly one word
+        self.page.wait_for_function(
+            "() => !document.getElementById('chatInput').disabled"
+            " && !document.getElementById('sendBtn').disabled",
+            timeout=15_000,
+        )
+        self.page.fill("#chatInput", "Reply with exactly: pong")
+        self._click_send_btn()
+        self.page.wait_for_selector(
+            ".message.assistant:has-text('pong')", timeout=120_000
+        )
+        self.page.wait_for_selector(
+            "#streamingIndicator", state="hidden", timeout=120_000
+        )
+
+        # Metrics bar must be visible with a positive token count
+        self.assertTrue(
+            self.page.locator("#chatMetrics").is_visible(),
+            "chat metrics bar should be visible after the chat",
+        )
+        tokens = int(self.page.locator("#metricTokensValue").inner_text())
+        self.assertGreater(tokens, 0, "total token metric should be > 0")
+
+        self._assert_screenshot_png(self._screenshot("43_live_chat"), 1280, 720)
+
+        # Unload the model (fail fast on the error toast, 120 s budget)
+        self.page.click("#unloadModelBtn")
+        unload_toast = self.page.wait_for_selector(
+            ".toast.success:has-text('Model unloaded'), "
+            ".toast.error:has-text('Unload failed')",
+            timeout=120_000,
+        )
+        self.assertIn(
+            "success", unload_toast.get_attribute("class") or "",
+            f"model unload failed: {unload_toast.inner_text()}",
+        )
+
     def test_thinking_stream_autoscrolls(self):
         """Interactive: streamed thinking auto-scrolls to the latest content.
 
@@ -1813,9 +2632,16 @@ class TestScreenshot(unittest.TestCase):
         self.page.click("#settingsToggle")
         self.page.wait_for_selector("#settingsPanel.open", timeout=5000)
 
-        # Switch to light theme
+        # Switch to light theme. The theme sheet @imports Google Fonts, so
+        # its application is network-dependent: wait (bounded) for the new
+        # sheet's variables to actually land instead of a fixed sleep that
+        # can flake under full-suite load.
         self.page.select_option("#themeSelect", "light")
-        self.page.wait_for_timeout(500)
+        self.page.wait_for_function(
+            """() => getComputedStyle(document.body)
+                .getPropertyValue('--bg-base').trim().toUpperCase() === '#FAFAF8'""",
+            timeout=15000,
+        )
 
         # Verify stylesheet href changed
         href = self.page.evaluate("document.getElementById('theme-stylesheet').href")
@@ -1872,9 +2698,13 @@ class TestScreenshot(unittest.TestCase):
         self.page.click("#settingsToggle")
         self.page.wait_for_selector("#settingsPanel.open", timeout=5000)
 
-        # Switch to warm theme
+        # Switch to warm theme (bounded wait for the sheet, see above)
         self.page.select_option("#themeSelect", "warm")
-        self.page.wait_for_timeout(500)
+        self.page.wait_for_function(
+            """() => getComputedStyle(document.body)
+                .getPropertyValue('--bg-base').trim().toUpperCase() === '#F5F0E8'""",
+            timeout=15000,
+        )
 
         # Verify stylesheet href changed
         href = self.page.evaluate("document.getElementById('theme-stylesheet').href")
@@ -1957,7 +2787,13 @@ class TestScreenshot(unittest.TestCase):
         # Reload page
         self.page.reload()
         self.page.wait_for_load_state("domcontentloaded")
-        self.page.wait_for_timeout(1000)
+        # Theme application is network-dependent (Google Fonts @import):
+        # wait for the variables to land instead of a fixed sleep.
+        self.page.wait_for_function(
+            """() => getComputedStyle(document.body)
+                .getPropertyValue('--bg-base').trim().toUpperCase() === '#FAFAF8'""",
+            timeout=15000,
+        )
 
         # Verify theme persisted: stylesheet href and select value
         href = self.page.evaluate("document.getElementById('theme-stylesheet').href")
@@ -2106,6 +2942,87 @@ class TestScreenshot(unittest.TestCase):
 
         self._assert_screenshot_png(self._screenshot("30_trace_entries_overflow"), 1280, 720)
 
+    def test_trace_log_receives_server_entries(self):
+        """SPEC minimum case 12: REAL trace entries arrive via the SSE stream.
+
+        The other trace tests inject entries manually; this one exercises
+        the actual pipeline end to end: a proxied request is logged through
+        backend/logger.py, which pushes structured entries to
+        backend/log_streamer.py, and the open panel's EventSource on
+        /api/trace-logs streams them into #traceLog (no fetch/SSE mocks).
+
+        Flow: open the Trace Log panel (starts the SSE subscription),
+        clear the list (the stream replays the server's last 50 buffered
+        entries on connect, which may include earlier tests' requests on
+        the shared server), then click Connect against an endpoint on a
+        PROVEN-CLOSED local port. The test must not depend on
+        localhost:1234 being down — on a machine where LM Studio itself
+        is running, the default target would connect successfully and no
+        ERROR entry would ever be produced. The refused connection is the
+        real request that produces entries: the proxy logs an OUT (DEBUG)
+        entry when it starts and an ERR (ERROR) entry when the target
+        refuses the connection. Both are pushed to the SSE stream and
+        must appear in the panel with their real level badges.
+        """
+        self._navigate()
+
+        # Open the trace panel: starts the SSE subscription to /api/trace-logs
+        self.page.click("#traceToggle")
+        self.page.wait_for_selector("#tracePanel.open", timeout=5000)
+
+        # Clear pre-existing (catch-up) entries so the list starts empty
+        self.page.click("#traceClearBtn")
+        self.page.wait_for_timeout(200)
+
+        # Pick a port that is proven closed: bind an ephemeral local port,
+        # read the OS-assigned number back, release the socket, and point
+        # the app at it. The connection to that port is refused, producing
+        # the real (traced) failed request.
+        probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        probe.bind(("127.0.0.1", 0))
+        closed_port = probe.getsockname()[1]
+        probe.close()
+        self.page.fill("#endpoint", f"http://127.0.0.1:{closed_port}")
+
+        # Connect to the closed port: the failed GET /v1/models proxy
+        # request pushes real trace entries.
+        self.page.click("#connectBtn")
+
+        # A real entry referencing the request must appear via the stream
+        # (a few seconds is plenty; the connection refusal is near-instant)
+        self.page.wait_for_function(
+            """() => [...document.querySelectorAll('#traceLog .trace-entry')]
+                .some(e => e.textContent.includes('/v1/models'))""",
+            timeout=30000,
+        )
+
+        # The failed connection's ERROR entry specifically: it is only
+        # pushed when the request actually ran and was traced server-side
+        self.page.wait_for_function(
+            """() => [...document.querySelectorAll('#traceLog .trace-entry')]
+                .some(e => e.textContent.includes('/v1/models')
+                    && e.querySelector('.trace-level').textContent === 'ERROR')""",
+            timeout=30000,
+        )
+
+        # The level badge of the first real entry must be a genuine server
+        # log level (not manually injected fixture text)
+        level = self.page.evaluate("""() => {
+            const entry = [...document.querySelectorAll('#traceLog .trace-entry')]
+                .find(e => e.textContent.includes('/v1/models'));
+            return entry ? entry.querySelector('.trace-level').textContent : null;
+        }""")
+        self.assertIn(
+            level, ("DEBUG", "INFO", "ERROR"),
+            f"Trace entry level badge should be a real server log level, got {level!r}",
+        )
+        count = self.page.evaluate(
+            "() => document.querySelectorAll('#traceLog .trace-entry').length")
+        self.assertGreaterEqual(
+            count, 1, "At least one real trace entry should be in the list")
+
+        self._assert_screenshot_png(self._screenshot("47_trace_log_live"), 1280, 720)
+
     # --- Cancellation (stop button) interactive tests ---
 
     def test_new_chat_cancels_request(self):
@@ -2185,7 +3102,14 @@ class TestScreenshot(unittest.TestCase):
         self.page.click("#settingsToggle")
         self.page.wait_for_selector("#settingsPanel.open", timeout=5000)
         self.page.select_option("#themeSelect", "light")
-        self.page.wait_for_timeout(500)
+        # Bounded wait for the light sheet to actually apply (its Google
+        # Fonts @import makes application network-dependent) so the
+        # screenshot is of the light theme, not the pre-swap state.
+        self.page.wait_for_function(
+            """() => getComputedStyle(document.body)
+                .getPropertyValue('--bg-base').trim().toUpperCase() === '#FAFAF8'""",
+            timeout=15000,
+        )
         self.assertIn(
             "theme-light.css",
             self.page.evaluate("document.getElementById('theme-stylesheet').href"),
@@ -2296,6 +3220,274 @@ class TestScreenshot(unittest.TestCase):
         )
         self._assert_screenshot_png(
             self._screenshot("32_resize_mobile"), 352, 1063
+        )
+
+
+    # --- Profiles (G1) ---
+
+    def _open_profiles_panel(self):
+        """Open the collapsible Profiles panel and wait for it to be visible."""
+        self.page.click("#profilesToggle")
+        self.page.wait_for_selector("#profilesPanel.open", timeout=5000)
+
+    def test_profiles_save_and_list(self):
+        """SPEC: save a named profile, see it listed, and have it persist.
+
+        Opens the Profiles panel, sets the endpoint (which fires change →
+        state), names the profile p1, and clicks Save. Asserts the profile
+        item renders with the endpoint, the saved toast appears, and
+        lm_console_profiles in localStorage holds the profile. A reload then
+        proves the profile survives a full app re-initialization.
+        """
+        self._navigate()
+        self._open_profiles_panel()
+
+        # Endpoint change fires the change listener → state + saveSettings
+        self.page.fill("#endpoint", "http://10.0.0.2:1234")
+        self.page.fill("#profileName", "p1")
+        self.page.click("#saveProfileBtn")
+
+        # Profile item listed with name + endpoint meta
+        self.page.wait_for_selector(
+            "#profileList .profile-item:has-text('p1')", timeout=5000
+        )
+        self.assertTrue(
+            self.page.locator("#profileList .profile-item:has-text('p1')").is_visible(),
+            "The saved profile p1 should be visible in the profile list",
+        )
+        self.assertTrue(
+            self.page.locator("#profileList .profile-item").locator(
+                ".profile-meta:has-text('http://10.0.0.2:1234')"
+            ).is_visible(),
+            "The profile meta should show the captured endpoint",
+        )
+        self.page.wait_for_selector(
+            '.toast.success:has-text("Profile \\\"p1\\\" saved")', timeout=5000
+        )
+
+        # Persisted in localStorage under the profiles key
+        stored = self.page.evaluate(
+            '() => JSON.parse(localStorage.getItem("lm_console_profiles") || "[]")'
+        )
+        self.assertEqual(len(stored), 1)
+        self.assertEqual(stored[0]["name"], "p1")
+        self.assertEqual(stored[0]["endpoint"], "http://10.0.0.2:1234")
+
+        # Persistence: reload the app and reopen the panel
+        self.page.reload()
+        self.page.wait_for_load_state("domcontentloaded")
+        self.page.wait_for_timeout(500)
+        self._open_profiles_panel()
+        self.page.wait_for_selector(
+            "#profileList .profile-item:has-text('p1')", timeout=5000
+        )
+        self.assertTrue(
+            self.page.locator("#profileList .profile-item:has-text('p1')").is_visible(),
+            "The profile should still be listed after a page reload",
+        )
+
+        self._assert_screenshot_png(
+            self._screenshot("44_profiles_save_list"), 1280, 720
+        )
+
+        # The Profiles panel is collapsible: toggling it again closes it
+        # (the .profiles-panel animates max-height, so wait for the class
+        # change and let the transition settle).
+        self.page.click("#profilesToggle")
+        self.page.wait_for_function(
+            "() => !document.getElementById('profilesPanel').classList.contains('open')",
+            timeout=5000,
+        )
+        self.page.wait_for_timeout(400)  # let the max-height transition finish
+        self.assertFalse(
+            self.page.locator("#profilesPanel").is_visible(),
+            "Profiles panel should be hidden after its toggle is clicked again",
+        )
+
+    def test_profiles_load_applies_settings(self):
+        """SPEC: loading a profile applies its settings to state and the UI.
+
+        Seeds one profile (endpoint, model, prompt, temperature, tool
+        toggle) into lm_console_profiles before the app reads storage, then
+        clicks the item's Load button. Asserts every control reflects the
+        profile: endpoint input, system prompt (+ unset checkbox cleared),
+        temperature slider + readout (+ unset checkbox cleared), tool-call
+        toggle checked, state.selectedModel, and lm_console_settings
+        persisted.
+        """
+        self._navigate()
+
+        # Seed the profile before the app re-initializes on reload
+        self.page.evaluate(
+            """(profile) => {
+                localStorage.setItem('lm_console_profiles', JSON.stringify([profile]));
+            }""",
+            {
+                "name": "p1",
+                "endpoint": "http://192.168.9.9:1234",
+                "apiToken": "",
+                "selectedModel": "m-x",
+                "systemPrompt": "Be brief.",
+                "temperature": 1.25,
+                "toolCallEnabled": True,
+                "savedAt": "2025-01-01T00:00:00.000Z",
+            },
+        )
+        self.page.reload()
+        self.page.wait_for_load_state("domcontentloaded")
+        self.page.wait_for_timeout(500)
+
+        self._open_profiles_panel()
+        self.page.wait_for_selector(
+            "#profileList .profile-item:has-text('p1')", timeout=5000
+        )
+
+        # Load the profile
+        self.page.click("#profileList .profile-item .load-btn")
+        self.page.wait_for_selector(
+            '.toast.success:has-text("Profile \\\"p1\\\" loaded")', timeout=5000
+        )
+
+        # Connection fields
+        self.assertEqual(
+            self.page.input_value("#endpoint"), "http://192.168.9.9:1234",
+            "Loading the profile should set the endpoint input",
+        )
+
+        # System prompt + its unset toggle
+        self.assertEqual(
+            self.page.input_value("#systemPrompt"), "Be brief.",
+            "Loading the profile should set the system prompt",
+        )
+        self.assertFalse(
+            self.page.locator("#systemPromptUnset").is_checked(),
+            "A non-empty profile prompt should clear the 'use server default' toggle",
+        )
+        self.assertFalse(self.page.locator("#systemPrompt").is_disabled())
+
+        # Temperature slider + readout + its unset toggle
+        self.assertEqual(
+            self.page.input_value("#temperature"), "1.25",
+            "Loading the profile should set the temperature slider",
+        )
+        self.assertEqual(
+            self.page.locator("#temperatureValue").inner_text(), "1.25",
+            "The temperature readout should show the profile value",
+        )
+        self.assertFalse(
+            self.page.locator("#temperatureUnset").is_checked(),
+            "A numeric profile temperature should clear the 'use server default' toggle",
+        )
+        self.assertFalse(self.page.locator("#temperature").is_disabled())
+
+        # Tool-call toggle
+        self.assertTrue(
+            self.page.locator("#toolCallToggle").is_checked(),
+            "The tool-call toggle should reflect the profile",
+        )
+
+        # Selected model in the shared state module
+        self.assertEqual(
+            self.page.evaluate(
+                "() => import('/static/js/state.js').then(m => m.state.selectedModel)"
+            ),
+            "m-x",
+            "Loading the profile should set state.selectedModel",
+        )
+
+        # Settings persisted to localStorage
+        settings = self.page.evaluate(
+            '() => JSON.parse(localStorage.getItem("lm_console_settings") || "{}")'
+        )
+        self.assertEqual(settings.get("endpoint"), "http://192.168.9.9:1234")
+        self.assertEqual(settings.get("selectedModel"), "m-x")
+        self.assertEqual(settings.get("systemPrompt"), "Be brief.")
+        self.assertEqual(settings.get("temperature"), 1.25)
+        self.assertIs(settings.get("toolCallEnabled"), True)
+
+        self._assert_screenshot_png(
+            self._screenshot("45_profiles_load"), 1280, 720
+        )
+
+    def test_profiles_modify_and_delete(self):
+        """SPEC: modify a profile (re-save same name) and delete it.
+
+        Saves p1 with endpoint A, changes the endpoint to B and re-saves p1.
+        Asserts exactly one profile item remains (upsert-by-name, not a
+        duplicate) and the stored endpoint is B. Then deletes it and asserts
+        the list returns to its empty state and the profile is gone from
+        localStorage.
+        """
+        self._navigate()
+        self._open_profiles_panel()
+
+        # Save p1 with endpoint A
+        self.page.fill("#endpoint", "http://10.0.0.5:1234")
+        self.page.fill("#profileName", "p1")
+        self.page.click("#saveProfileBtn")
+        self.page.wait_for_selector(
+            "#profileList .profile-item:has-text('p1')", timeout=5000
+        )
+        self.assertEqual(
+            self.page.locator("#profileList .profile-item").count(), 1,
+            "Exactly one profile should exist after the first save",
+        )
+
+        # Change endpoint to B and re-save the same name (modify)
+        self.page.fill("#endpoint", "http://10.0.0.6:1234")
+        self.page.click("#saveProfileBtn")
+        self.page.wait_for_selector(
+            "#profileList .profile-item:has-text('p1')", timeout=5000
+        )
+        self.assertEqual(
+            self.page.locator("#profileList .profile-item").count(), 1,
+            "Re-saving an existing name must modify in place, not duplicate",
+        )
+
+        # Stored profile is the modified one (endpoint B)
+        stored = self.page.evaluate(
+            '() => JSON.parse(localStorage.getItem("lm_console_profiles") || "[]")'
+        )
+        self.assertEqual(len(stored), 1, "Re-save must keep a single stored profile")
+        self.assertEqual(stored[0]["name"], "p1")
+        self.assertEqual(
+            stored[0]["endpoint"], "http://10.0.0.6:1234",
+            "The re-saved profile must carry the new endpoint",
+        )
+        self.assertTrue(
+            self.page.locator("#profileList .profile-item").locator(
+                ".profile-meta:has-text('http://10.0.0.6:1234')"
+            ).is_visible(),
+            "The profile meta should show the updated endpoint",
+        )
+
+        # Delete it
+        self.page.click("#profileList .profile-item .delete-btn")
+        self.page.wait_for_selector(
+            '.toast.info:has-text("Profile \\\"p1\\\" deleted")', timeout=5000
+        )
+
+        # Back to the empty state, and the profile is gone from storage
+        self.assertEqual(
+            self.page.locator("#profileList .profile-item").count(), 0,
+            "No profile items should remain after delete",
+        )
+        self.assertTrue(
+            self.page.locator(
+                "#profileList .empty-state:has-text('Saved profiles will appear here')"
+            ).is_visible(),
+            "The profile list should show its empty state after delete",
+        )
+        stored_raw = self.page.evaluate('() => localStorage.getItem("lm_console_profiles")')
+        stored_after = self.page.evaluate(
+            '() => JSON.parse(localStorage.getItem("lm_console_profiles") || "[]")'
+        )
+        self.assertEqual(stored_after, [], "No stored profiles should remain after delete")
+        if stored_raw is not None:
+            self.assertNotIn("p1", stored_raw)
+
+        self._assert_screenshot_png(
+            self._screenshot("46_profiles_modify_delete"), 1280, 720
         )
 
 
