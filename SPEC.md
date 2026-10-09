@@ -105,4 +105,15 @@ Use these resources to research more information about specific topics.
 - https://developers.openai.com/api/reference/resources/decisions/methods/create/index.md
 
 Use the following LIVE LM Studio/OpenAI compatible endpoint for validating testing assumptions:  
-```http://192.168.0.5:1234```
+```http://192.168.0.40:1234```
+
+Models suitable for testing:  
+** Chat (thinking): ** unsloth/qwen3.8-27b@q4_k_xl  
+** Chat (non-thinking): ** mradermacher/broken-tutu-24b-unslop-v2.0  
+** Decisions: ** ggml-org/openjev  
+
+
+
+
+
+
