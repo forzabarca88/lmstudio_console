@@ -35,6 +35,7 @@ The interface must be modern and responsive, with striking design.
 
 - Implement remote API management capabilities of List Models, Load Model, Unload Model.
 - Implement chat functionality with any OpenAI compatible endpoint - models should be populated based on API models list response.
+- Implement support for `System One` models using the OpenAI `/decisions` endpoint. Ensure that the UI supports this capability with user friendly switches or toggles since this is a fundamentally different way to interact compared to chat models.
 - Render messages in Markdown.
 - User should be able to input multi-line messages using SHIFT + ENTER for newline.
 - Allow tweaking of System Prompt and Temperature for chat. User should be able to unset them (should be the default option in the app) in order to chat with the defaults set by the server.
@@ -101,6 +102,7 @@ Use these resources to research more information about specific topics.
 - https://github.com/fastapi/fastapi/blob/master/README.md
 - https://github.com/pydantic/pydantic-ai/blob/main/README.md
 - https://developers.openai.com/api/reference/resources/chat/index.md
+- https://developers.openai.com/api/reference/resources/decisions/methods/create/index.md
 
 Use the following LIVE LM Studio/OpenAI compatible endpoint for validating testing assumptions:  
 ```http://192.168.0.5:1234```
